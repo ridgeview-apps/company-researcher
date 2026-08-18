@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Evidence-driven investigations over UK company filings"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pydantic-settings>=2.15.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.6,<0.12.0"]
