@@ -7,8 +7,10 @@ requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.19.1",
     "asyncpg>=0.31.0",
+    "fastapi>=0.141.1",
     "pydantic-settings>=2.15.0",
     "sqlalchemy[asyncio]>=2.0.52",
+    "uvicorn[standard]>=0.52.3",
 ]
 
 [build-system]
@@ -37,6 +39,7 @@ strict = true
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.12.0",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
