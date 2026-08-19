@@ -14,6 +14,8 @@ from company_researcher.companies_house.exceptions import (
     CompaniesHouseResponseError,
 )
 from company_researcher.config import Settings
+from company_researcher.db.session import create_database_engine, create_session_factory
+from company_researcher.ingestion import ingest_company
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +31,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fetch a company profile and complete filing history.",
     )
     inspect_parser.add_argument(
+        "company_number",
+        help="Companies House company number, for example 00000006.",
+    )
+
+    ingest_parser = subparsers.add_parser(
+        "ingest",
+        help="Fetch a company profile and filing history and persist them.",
+    )
+    ingest_parser.add_argument(
         "company_number",
         help="Companies House company number, for example 00000006.",
     )
@@ -54,12 +65,40 @@ def run_inspection(company_number: str) -> str:
     return asyncio.run(inspect_company(company_number))
 
 
+async def ingest_company_command(company_number: str) -> str:
+    """Fetch a company's data and persist it, reporting what was stored."""
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with (
+            CompaniesHouseClient.from_settings(settings) as client,
+            session_factory() as session,
+        ):
+            result = await ingest_company(session, client, company_number)
+    finally:
+        await engine.dispose()
+
+    return (
+        f"Ingested {result.company_name} ({result.company_number}): "
+        f"{result.filing_count} filing(s) persisted."
+    )
+
+
+def run_ingestion(company_number: str) -> str:
+    """Run the async ingestion from a synchronous console entry point."""
+    return asyncio.run(ingest_company_command(company_number))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Company Researcher command-line interface."""
     args = build_parser().parse_args(argv)
 
     try:
-        output = run_inspection(args.company_number)
+        if args.command == "ingest":
+            output = run_ingestion(args.company_number)
+        else:
+            output = run_inspection(args.company_number)
     except CompaniesHouseConfigurationError as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2

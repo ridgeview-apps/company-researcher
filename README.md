@@ -9,14 +9,16 @@ histories commonly found in enterprise AI projects. The long-term value of the
 project is its retrieval, evidence, evaluation, and human-review architecture;
 the public data source should remain replaceable.
 
-The project is currently at its Day 1 foundation. It can:
+The project is currently at its Day 2 foundation. It can:
 
 - run a local PostgreSQL 17 database with the `pgvector` extension available;
 - manage the database schema with SQLAlchemy and Alembic;
 - run a minimal FastAPI application;
 - retrieve a real company profile and complete filing history from Companies
-  House; and
-- inspect that source data through a small command-line interface.
+  House;
+- inspect that source data through a small command-line interface; and
+- persist a company's profile and filing history in PostgreSQL, with source
+  provenance and retrieval timestamps, idempotently.
 
 Advanced RAG, embeddings, LangGraph, temporal analysis, evaluation, and
 human-in-the-loop workflows are deliberately deferred until later phases.
@@ -189,6 +191,21 @@ The client handles authentication failures, missing companies, rate limiting,
 connection failures, response errors, pagination, and response validation. API
 responses remain external, untrusted input.
 
+## Persist a real company
+
+Fetch a company profile and filing history and store them in PostgreSQL:
+
+```bash
+uv run company-researcher ingest 00000006
+```
+
+Each row records `source`, `retrieved_at`, and the raw source payload
+alongside its structured fields, so ingested data stays auditable back to
+where and when it came from. Re-running `ingest` for the same company number
+updates the existing rows in place rather than creating duplicates.
+
+In VS Code, select **Run and Debug → CLI: Ingest Company**.
+
 ## Quality checks
 
 Run the test suite:
@@ -225,9 +242,10 @@ uv run ruff format .
 ├── src/company_researcher/
 │   ├── api/                            # FastAPI routes
 │   ├── companies_house/                # Replaceable source integration
-│   ├── db/                             # SQLAlchemy engine and metadata
-│   ├── cli.py                          # Company inspection command
+│   ├── db/                             # SQLAlchemy engine, sessions, and models
+│   ├── cli.py                          # Company inspection and ingestion commands
 │   ├── config.py                       # Environment-backed settings
+│   ├── ingestion.py                    # Idempotent persistence of source data
 │   └── main.py                         # FastAPI application factory
 ├── tests/                              # Focused unit and API tests
 ├── .env.example                        # Safe configuration template

@@ -27,6 +27,20 @@ def test_main_prints_inspection(
     assert captured.err == ""
 
 
+def test_main_prints_ingestion(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "run_ingestion", lambda company_number: "Ingested.")
+
+    exit_code = cli.main(["ingest", "00000006"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "Ingested.\n"
+    assert captured.err == ""
+
+
 @pytest.mark.parametrize(
     ("error_factory", "expected_exit_code", "expected_message"),
     [
