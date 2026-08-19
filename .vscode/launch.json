@@ -17,6 +17,28 @@
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
       "justMyCode": true
+    },
+    {
+      "name": "CLI: Inspect Company",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "company_researcher.cli",
+      "args": [
+        "inspect",
+        "${input:companyNumber}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "companyNumber",
+      "type": "promptString",
+      "description": "Companies House company number",
+      "default": "00000006"
     }
   ]
 }

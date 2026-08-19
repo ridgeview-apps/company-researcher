@@ -1,0 +1,83 @@
+from collections.abc import Callable
+
+import pytest
+
+from company_researcher import cli
+from company_researcher.companies_house.exceptions import (
+    CompaniesHouseAuthenticationError,
+    CompaniesHouseConfigurationError,
+    CompaniesHouseConnectionError,
+    CompaniesHouseNotFoundError,
+    CompaniesHouseRateLimitError,
+    CompaniesHouseResponseError,
+)
+
+
+def test_main_prints_inspection(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "run_inspection", lambda company_number: '{"ok": true}')
+
+    exit_code = cli.main(["inspect", "00000006"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == '{"ok": true}\n'
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "expected_exit_code", "expected_message"),
+    [
+        (
+            CompaniesHouseConfigurationError,
+            2,
+            "Configuration error",
+        ),
+        (
+            CompaniesHouseAuthenticationError,
+            3,
+            "Authentication error",
+        ),
+        (
+            CompaniesHouseNotFoundError,
+            4,
+            "Not found",
+        ),
+        (
+            CompaniesHouseRateLimitError,
+            5,
+            "Rate limit error",
+        ),
+        (
+            CompaniesHouseConnectionError,
+            1,
+            "Companies House error",
+        ),
+        (
+            CompaniesHouseResponseError,
+            1,
+            "Companies House error",
+        ),
+    ],
+)
+def test_main_maps_expected_errors_to_exit_codes(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error_factory: Callable[[str], Exception],
+    expected_exit_code: int,
+    expected_message: str,
+) -> None:
+    def raise_error(company_number: str) -> str:
+        raise error_factory("safe test message")
+
+    monkeypatch.setattr(cli, "run_inspection", raise_error)
+
+    exit_code = cli.main(["inspect", "00000006"])
+
+    captured = capsys.readouterr()
+    assert exit_code == expected_exit_code
+    assert captured.out == ""
+    assert expected_message in captured.err
+    assert "safe test message" in captured.err
