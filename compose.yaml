@@ -18,5 +18,42 @@ services:
       retries: 5
       start_period: 5s
 
+  migrate:
+    build:
+      context: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-company_researcher}:${POSTGRES_PASSWORD:-company_researcher}@db:5432/${POSTGRES_DB:-company_researcher}
+    command:
+      - alembic
+      - upgrade
+      - head
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-company_researcher}:${POSTGRES_PASSWORD:-company_researcher}@db:5432/${POSTGRES_DB:-company_researcher}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
 volumes:
   postgres_data:

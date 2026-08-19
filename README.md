@@ -95,6 +95,47 @@ docker compose down
 
 The named Docker volume preserves the database between restarts.
 
+## Run the complete stack in Docker
+
+Build the application image and start PostgreSQL, the migration task, and the
+FastAPI service:
+
+```bash
+docker compose up --build -d
+```
+
+Compose starts the services in dependency order:
+
+1. `db` starts and passes its PostgreSQL health check.
+2. `migrate` applies `alembic upgrade head` and exits successfully.
+3. `api` starts and passes its HTTP health check.
+
+Inspect the state of all three services:
+
+```bash
+docker compose ps -a
+```
+
+The `db` and `api` services should be healthy, while `migrate` should show that
+it exited with status `0`. The API is then available at
+<http://127.0.0.1:8000> by default.
+
+Run the company inspection command inside the application container:
+
+```bash
+docker compose exec api company-researcher inspect 00000006
+```
+
+`DATABASE_URL` uses `localhost` when Python runs directly on the host. Compose
+overrides it inside the application containers so they connect to PostgreSQL at
+the Docker service hostname `db`.
+
+Stop the complete stack without deleting PostgreSQL data:
+
+```bash
+docker compose down
+```
+
 ## Run the API
 
 Start FastAPI locally with Uvicorn:
