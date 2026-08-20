@@ -1,4 +1,6 @@
 from collections.abc import Callable
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -11,7 +13,10 @@ from company_researcher.companies_house.exceptions import (
     CompaniesHouseRateLimitError,
     CompaniesHouseResponseError,
 )
+from company_researcher.db.models import FilingDocument
 from company_researcher.document_ingestion import DocumentIngestionError
+from company_researcher.extraction_persistence import ExtractionPersistenceResult
+from company_researcher.pdf_extraction import PdfExtractionError
 
 
 def test_main_prints_inspection(
@@ -58,6 +63,94 @@ def test_main_prints_document_ingestion(
     assert exit_code == 0
     assert captured.out == "Created document.\n"
     assert captured.err == ""
+
+
+def test_main_prints_document_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "run_document_extraction",
+        lambda filing_document_id: "Created extraction.",
+    )
+
+    exit_code = cli.main(["extract-document", "42"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "Created extraction.\n"
+    assert captured.err == ""
+
+
+def test_main_reports_document_extraction_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_extraction(filing_document_id: int) -> str:
+        raise PdfExtractionError("safe OCR failure")
+
+    monkeypatch.setattr(cli, "run_document_extraction", fail_extraction)
+
+    exit_code = cli.main(["extract-document", "42"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "Document extraction error: safe OCR failure\n"
+
+
+@pytest.mark.asyncio
+async def test_extract_document_command_orchestrates_persisted_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    filing_document = object()
+    session = MagicMock()
+    session.get = AsyncMock(return_value=filing_document)
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=False)
+    session_factory = MagicMock(return_value=session_context)
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    extractor = object()
+    extraction_result = ExtractionPersistenceResult(
+        document_extraction_id=7,
+        page_count=50,
+        total_character_count=115_763,
+        created=True,
+    )
+    persist = AsyncMock(return_value=extraction_result)
+
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: MagicMock(artifact_root=tmp_path),
+    )
+    monkeypatch.setattr(cli, "create_database_engine", lambda settings: engine)
+    monkeypatch.setattr(
+        cli,
+        "create_session_factory",
+        lambda configured_engine: session_factory,
+    )
+    monkeypatch.setattr(cli, "TesseractPdfExtractor", lambda: extractor)
+    monkeypatch.setattr(cli, "extract_filing_document", persist)
+
+    output = await cli.extract_document_command(42)
+
+    assert output == "Created extraction 7: 50 page(s), 115763 character(s)."
+    session.get.assert_awaited_once_with(FilingDocument, 42)
+    persist.assert_awaited_once()
+    assert persist.await_args is not None
+    persisted_session, artifact_store, persisted_extractor, persisted_document = (
+        persist.await_args.args
+    )
+    assert persisted_session is session
+    assert artifact_store._root == tmp_path
+    assert persisted_extractor is extractor
+    assert persisted_document is filing_document
+    engine.dispose.assert_awaited_once_with()
 
 
 @pytest.mark.parametrize(

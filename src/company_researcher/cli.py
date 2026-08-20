@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 from sqlalchemy import select
 
-from company_researcher.artifact_store import LocalArtifactStore
+from company_researcher.artifact_store import ArtifactStoreError, LocalArtifactStore
 from company_researcher.companies_house import (
     CompaniesHouseClient,
     CompaniesHouseDocumentClient,
@@ -21,13 +21,19 @@ from company_researcher.companies_house.exceptions import (
     CompaniesHouseResponseError,
 )
 from company_researcher.config import Settings
-from company_researcher.db.models import Filing
+from company_researcher.db.models import Filing, FilingDocument
 from company_researcher.db.session import create_database_engine, create_session_factory
 from company_researcher.document_ingestion import (
     DocumentIngestionError,
     ingest_filing_document,
 )
+from company_researcher.extraction_persistence import extract_filing_document
 from company_researcher.ingestion import ingest_company
+from company_researcher.pdf_extraction import PdfExtractionError, TesseractPdfExtractor
+
+
+class DocumentExtractionCommandError(Exception):
+    """Raised when a requested filing document cannot be extracted."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
     document_parser.add_argument(
         "transaction_id",
         help="Previously ingested Companies House filing transaction ID.",
+    )
+
+    extraction_parser = subparsers.add_parser(
+        "extract-document",
+        help="OCR and persist the pages of one downloaded filing document.",
+    )
+    extraction_parser.add_argument(
+        "filing_document_id",
+        type=int,
+        help="Database ID of a previously downloaded filing document.",
     )
     return parser
 
@@ -155,12 +171,50 @@ def run_document_ingestion(company_number: str, transaction_id: str) -> str:
     return asyncio.run(ingest_document_command(company_number, transaction_id))
 
 
+async def extract_document_command(filing_document_id: int) -> str:
+    """OCR and persist one previously downloaded filing document."""
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            filing_document = await session.get(FilingDocument, filing_document_id)
+            if filing_document is None:
+                raise DocumentExtractionCommandError(
+                    f"Filing document {filing_document_id} is not persisted; "
+                    "ingest it first"
+                )
+
+            result = await extract_filing_document(
+                session,
+                LocalArtifactStore(settings.artifact_root),
+                TesseractPdfExtractor(),
+                filing_document,
+            )
+    finally:
+        await engine.dispose()
+
+    action = "Created" if result.created else "Reused"
+    return (
+        f"{action} extraction {result.document_extraction_id}: "
+        f"{result.page_count} page(s), "
+        f"{result.total_character_count} character(s)."
+    )
+
+
+def run_document_extraction(filing_document_id: int) -> str:
+    """Run one filing-document extraction from the synchronous CLI."""
+    return asyncio.run(extract_document_command(filing_document_id))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Company Researcher command-line interface."""
     args = build_parser().parse_args(argv)
 
     try:
-        if args.command == "ingest-document":
+        if args.command == "extract-document":
+            output = run_document_extraction(args.filing_document_id)
+        elif args.command == "ingest-document":
             output = run_document_ingestion(args.company_number, args.transaction_id)
         elif args.command == "ingest":
             output = run_ingestion(args.company_number)
@@ -183,6 +237,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except DocumentIngestionError as error:
         print(f"Document ingestion error: {error}", file=sys.stderr)
+        return 1
+    except (
+        DocumentExtractionCommandError,
+        ArtifactStoreError,
+        PdfExtractionError,
+    ) as error:
+        print(f"Document extraction error: {error}", file=sys.stderr)
         return 1
 
     print(output)

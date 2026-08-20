@@ -234,6 +234,19 @@ document version.
 Documents default to content-addressed paths beneath `data/artifacts`. The
 directory is ignored by Git and can be changed with `ARTIFACT_ROOT`.
 
+## Extract a filing document
+
+Run page-aware OCR for a downloaded filing document using its PostgreSQL ID:
+
+```bash
+uv run company-researcher extract-document FILING_DOCUMENT_ID
+```
+
+The command verifies the stored PDF against its recorded SHA-256 checksum,
+extracts every page with Tesseract, and persists the page text together with
+the exact OCR and renderer configuration. Repeating the command with the same
+document and configuration reuses the successful extraction.
+
 ## Quality checks
 
 Run the test suite:
