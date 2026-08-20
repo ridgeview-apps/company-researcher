@@ -137,3 +137,103 @@ class FilingDocument(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class DocumentExtraction(Base):
+    """One reproducible OCR run for an immutable filing-document version."""
+
+    __tablename__ = "document_extractions"
+    __table_args__ = (
+        UniqueConstraint(
+            "filing_document_id",
+            "extractor",
+            "extractor_version",
+            "renderer",
+            "renderer_version",
+            "language",
+            "render_dpi",
+            "page_segmentation_mode",
+            name="uq_document_extractions_document_configuration",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed')",
+            name="ck_document_extractions_status",
+        ),
+        CheckConstraint(
+            "page_count IS NULL OR page_count >= 0",
+            name="ck_document_extractions_page_count_non_negative",
+        ),
+        CheckConstraint(
+            "total_character_count IS NULL OR total_character_count >= 0",
+            name="ck_document_extractions_character_count_non_negative",
+        ),
+        CheckConstraint(
+            "render_dpi >= 72",
+            name="ck_document_extractions_render_dpi_minimum",
+        ),
+        CheckConstraint(
+            "page_segmentation_mode BETWEEN 0 AND 13",
+            name="ck_document_extractions_page_segmentation_mode",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    filing_document_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("filing_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="running")
+    extractor: Mapped[str] = mapped_column(Text, nullable=False)
+    extractor_version: Mapped[str] = mapped_column(Text, nullable=False)
+    renderer: Mapped[str] = mapped_column(Text, nullable=False)
+    renderer_version: Mapped[str] = mapped_column(Text, nullable=False)
+    language: Mapped[str] = mapped_column(Text, nullable=False)
+    render_dpi: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_segmentation_mode: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    total_character_count: Mapped[int | None] = mapped_column(BigInteger)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DocumentPage(Base):
+    """OCR text for one page of a specific document extraction."""
+
+    __tablename__ = "document_pages"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_extraction_id",
+            "page_number",
+            name="uq_document_pages_extraction_page_number",
+        ),
+        CheckConstraint(
+            "page_number >= 1",
+            name="ck_document_pages_page_number_positive",
+        ),
+        CheckConstraint(
+            "character_count >= 0",
+            name="ck_document_pages_character_count_non_negative",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    document_extraction_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("document_extractions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    character_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
