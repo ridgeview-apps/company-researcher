@@ -2,6 +2,7 @@ import asyncio
 import re
 from dataclasses import dataclass
 from importlib.metadata import version
+from typing import Protocol
 
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
 import pytesseract  # type: ignore[import-untyped]
@@ -23,6 +24,19 @@ class ExtractedPage:
 
 
 @dataclass(frozen=True)
+class PdfExtractionConfiguration:
+    """Exact tools and settings defining a reproducible extraction run."""
+
+    extractor: str
+    extractor_version: str
+    renderer: str
+    renderer_version: str
+    language: str
+    render_dpi: int
+    page_segmentation_mode: int
+
+
+@dataclass(frozen=True)
 class PdfExtractionResult:
     """Page-aware OCR output and the exact extraction configuration."""
 
@@ -34,6 +48,19 @@ class PdfExtractionResult:
     language: str
     render_dpi: int
     page_segmentation_mode: int
+
+
+class PdfExtractor(Protocol):
+    """Boundary for page-aware PDF text extraction."""
+
+    @property
+    def configuration(self) -> PdfExtractionConfiguration:
+        """Return the exact extraction tools and settings."""
+        ...
+
+    async def extract(self, pdf_content: bytes) -> PdfExtractionResult:
+        """Extract text from every PDF page."""
+        ...
 
 
 class TesseractPdfExtractor:
@@ -56,6 +83,19 @@ class TesseractPdfExtractor:
         self._language = language
         self._render_dpi = render_dpi
         self._page_segmentation_mode = page_segmentation_mode
+
+    @property
+    def configuration(self) -> PdfExtractionConfiguration:
+        """Return the installed OCR versions and configured extraction settings."""
+        return PdfExtractionConfiguration(
+            extractor="tesseract",
+            extractor_version=str(pytesseract.get_tesseract_version()).splitlines()[0],
+            renderer="pypdfium2",
+            renderer_version=version("pypdfium2"),
+            language=self._language,
+            render_dpi=self._render_dpi,
+            page_segmentation_mode=self._page_segmentation_mode,
+        )
 
     async def extract(self, pdf_content: bytes) -> PdfExtractionResult:
         """Extract every PDF page without blocking the async event loop."""
@@ -97,13 +137,14 @@ class TesseractPdfExtractor:
         finally:
             document.close()
 
+        configuration = self.configuration
         return PdfExtractionResult(
             pages=pages,
-            extractor="tesseract",
-            extractor_version=str(pytesseract.get_tesseract_version()).splitlines()[0],
-            renderer="pypdfium2",
-            renderer_version=version("pypdfium2"),
-            language=self._language,
-            render_dpi=self._render_dpi,
-            page_segmentation_mode=self._page_segmentation_mode,
+            extractor=configuration.extractor,
+            extractor_version=configuration.extractor_version,
+            renderer=configuration.renderer,
+            renderer_version=configuration.renderer_version,
+            language=configuration.language,
+            render_dpi=configuration.render_dpi,
+            page_segmentation_mode=configuration.page_segmentation_mode,
         )

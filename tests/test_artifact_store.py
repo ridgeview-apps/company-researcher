@@ -4,6 +4,7 @@ import pytest
 
 from company_researcher.artifact_store import (
     ArtifactIntegrityError,
+    ArtifactStoreError,
     LocalArtifactStore,
 )
 
@@ -71,3 +72,36 @@ async def test_put_rejects_empty_content(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="empty"):
         await store.put(b"", extension="pdf")
+
+
+@pytest.mark.asyncio
+async def test_get_reads_and_verifies_stored_artifact(tmp_path: Path) -> None:
+    store = LocalArtifactStore(tmp_path)
+    stored = await store.put(b"verified content", extension="pdf")
+
+    content = await store.get(stored.storage_key, expected_sha256=stored.sha256)
+
+    assert content == b"verified content"
+
+
+@pytest.mark.asyncio
+async def test_get_rejects_corrupt_stored_artifact(tmp_path: Path) -> None:
+    store = LocalArtifactStore(tmp_path)
+    stored = await store.put(b"original content", extension="pdf")
+    (tmp_path / stored.storage_key).write_bytes(b"corrupt content")
+
+    with pytest.raises(ArtifactIntegrityError):
+        await store.get(stored.storage_key, expected_sha256=stored.sha256)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("storage_key", ["../artifact.pdf", "/artifact.pdf"])
+async def test_get_rejects_unsafe_storage_key(
+    tmp_path: Path,
+    storage_key: str,
+) -> None:
+    with pytest.raises(ArtifactStoreError, match="key"):
+        await LocalArtifactStore(tmp_path).get(
+            storage_key,
+            expected_sha256="a" * 64,
+        )

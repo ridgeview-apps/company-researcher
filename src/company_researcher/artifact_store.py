@@ -34,6 +34,10 @@ class ArtifactStore(Protocol):
         """Store content and return its stable reference."""
         ...
 
+    async def get(self, storage_key: str, *, expected_sha256: str) -> bytes:
+        """Read content after verifying its expected checksum."""
+        ...
+
 
 class LocalArtifactStore:
     """Store immutable artifacts in a content-addressed local directory."""
@@ -44,6 +48,39 @@ class LocalArtifactStore:
     async def put(self, content: bytes, *, extension: str) -> StoredArtifact:
         """Store content once and return its stable content-addressed reference."""
         return await asyncio.to_thread(self._put_sync, content, extension)
+
+    async def get(self, storage_key: str, *, expected_sha256: str) -> bytes:
+        """Read a stored artifact and verify its content-addressed identity."""
+        return await asyncio.to_thread(
+            self._get_sync,
+            storage_key,
+            expected_sha256,
+        )
+
+    def _get_sync(self, storage_key: str, expected_sha256: str) -> bytes:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ValueError("expected_sha256 must be a lowercase SHA-256 digest")
+
+        relative_path = Path(storage_key)
+        if (
+            relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or relative_path.name.split(".", maxsplit=1)[0] != expected_sha256
+        ):
+            raise ArtifactStoreError("Artifact storage key is invalid")
+
+        artifact_path = self._root / relative_path
+        try:
+            content = artifact_path.read_bytes()
+        except FileNotFoundError as error:
+            raise ArtifactStoreError("Artifact does not exist") from error
+
+        actual_checksum = sha256(content).hexdigest()
+        if actual_checksum != expected_sha256:
+            raise ArtifactIntegrityError(
+                "Artifact does not match its recorded checksum"
+            )
+        return content
 
     def _put_sync(self, content: bytes, extension: str) -> StoredArtifact:
         if not content:
