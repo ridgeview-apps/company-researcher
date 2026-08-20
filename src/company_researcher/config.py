@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AnyHttpUrl, SecretStr
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Company Researcher"
     app_environment: Literal["local", "test", "production"] = "local"
+    artifact_root: Path = Path("data/artifacts")
 
     database_url: str = (
         "postgresql+asyncpg://company_researcher:company_researcher@"
