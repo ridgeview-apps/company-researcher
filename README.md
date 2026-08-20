@@ -9,19 +9,28 @@ histories commonly found in enterprise AI projects. The long-term value of the
 project is its retrieval, evidence, evaluation, and human-review architecture;
 the public data source should remain replaceable.
 
-The project is currently at its Day 2 foundation. It can:
+The project has completed its ingestion and document-processing foundation. It
+can:
 
 - run a local PostgreSQL 17 database with the `pgvector` extension available;
 - manage the database schema with SQLAlchemy and Alembic;
 - run a minimal FastAPI application;
 - retrieve a real company profile and complete filing history from Companies
   House;
-- inspect that source data through a small command-line interface; and
+- inspect that source data through a small command-line interface;
 - persist a company's profile and filing history in PostgreSQL, with source
-  provenance and retrieval timestamps, idempotently.
+  provenance and retrieval timestamps, idempotently;
+- download filing PDFs and preserve their metadata and immutable original bytes
+  in content-addressed storage;
+- verify stored artifacts against their recorded SHA-256 checksums;
+- extract image-only PDFs page by page with local Tesseract OCR; and
+- persist page text and exact extraction provenance, reusing an existing
+  successful extraction when its document and configuration are unchanged.
 
-Advanced RAG, embeddings, LangGraph, temporal analysis, evaluation, and
-human-in-the-loop workflows are deliberately deferred until later phases.
+The next phase establishes a small labelled retrieval corpus and a deterministic
+PostgreSQL lexical-search baseline. LLM generation, embeddings, hybrid
+retrieval, LangGraph, temporal analysis, and human-in-the-loop workflows remain
+deliberately deferred until their evidence and retrieval foundations exist.
 
 ## Prerequisites
 
@@ -284,10 +293,14 @@ uv run ruff format .
 │   ├── api/                            # FastAPI routes
 │   ├── companies_house/                # Replaceable source integration
 │   ├── db/                             # SQLAlchemy engine, sessions, and models
-│   ├── cli.py                          # Company inspection and ingestion commands
+│   ├── artifact_store.py               # Content-addressed source artifacts
+│   ├── cli.py                          # Inspection, ingestion, and extraction CLI
 │   ├── config.py                       # Environment-backed settings
+│   ├── document_ingestion.py           # Filing-document acquisition and persistence
+│   ├── extraction_persistence.py       # Idempotent page-extraction persistence
 │   ├── ingestion.py                    # Idempotent persistence of source data
-│   └── main.py                         # FastAPI application factory
+│   ├── main.py                         # FastAPI application factory
+│   └── pdf_extraction.py               # Page-aware local PDF OCR
 ├── tests/                              # Focused unit and API tests
 ├── .env.example                        # Safe configuration template
 ├── alembic.ini                         # Alembic configuration
