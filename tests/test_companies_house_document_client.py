@@ -55,6 +55,40 @@ async def test_get_document_metadata_authenticates_and_validates_response() -> N
 
 
 @pytest.mark.asyncio
+async def test_get_document_metadata_accepts_fields_omitted_by_live_api() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={
+                "barcode": "X1234567",
+                "category": "accounts",
+                "company_number": "08130873",
+                "created_at": "2026-05-10T22:33:40.341098341Z",
+                "etag": "document-etag",
+                "filename": "accounts.pdf",
+                "pages": 50,
+                "resources": {
+                    "application/pdf": {
+                        "content_length": 2230779,
+                    }
+                },
+                "significant_date": "2025-07-31T00:00:00Z",
+                "significant_date_type": "made-up-date",
+            },
+            request=request,
+        )
+
+    async with create_client(httpx2.MockTransport(handler)) as client:
+        metadata = await client.get_document_metadata("document-123")
+
+    assert metadata.id is None
+    assert metadata.resources["application/pdf"].created_at is None
+    assert metadata.resources["application/pdf"].content_length == 2230779
+    assert metadata.model_extra is not None
+    assert metadata.model_extra["company_number"] == "08130873"
+
+
+@pytest.mark.asyncio
 async def test_get_document_metadata_rejects_malformed_payload() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(200, json={"id": "document-123"}, request=request)

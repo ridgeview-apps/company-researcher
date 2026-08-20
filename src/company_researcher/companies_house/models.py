@@ -52,7 +52,7 @@ class FilingHistory(BaseModel):
 
 class DocumentResource(CompaniesHouseModel):
     content_length: int
-    created_at: datetime
+    created_at: datetime | None = None
     updated_at: datetime | None = None
 
 
@@ -62,7 +62,7 @@ class DocumentLinks(CompaniesHouseModel):
 
 
 class DocumentMetadata(CompaniesHouseModel):
-    id: str
+    id: str | None = None
     created_at: datetime
     etag: str
     pages: int | None = None
