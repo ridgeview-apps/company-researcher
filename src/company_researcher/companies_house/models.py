@@ -1,4 +1,5 @@
 from datetime import date as Date
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -47,3 +48,24 @@ class FilingHistory(BaseModel):
 
     items: list[FilingHistoryItem]
     total_count: int
+
+
+class DocumentResource(CompaniesHouseModel):
+    content_length: int
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class DocumentLinks(CompaniesHouseModel):
+    document: str | None = None
+    self: str | None = None
+
+
+class DocumentMetadata(CompaniesHouseModel):
+    id: str
+    created_at: datetime
+    etag: str
+    pages: int | None = None
+    updated_at: datetime | None = None
+    links: DocumentLinks = Field(default_factory=DocumentLinks)
+    resources: dict[str, DocumentResource] = Field(default_factory=dict)

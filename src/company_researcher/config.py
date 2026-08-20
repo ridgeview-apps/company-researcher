@@ -25,3 +25,6 @@ class Settings(BaseSettings):
     companies_house_base_url: AnyHttpUrl = AnyHttpUrl(
         "https://api.company-information.service.gov.uk"
     )
+    companies_house_document_base_url: AnyHttpUrl = AnyHttpUrl(
+        "https://document-api.company-information.service.gov.uk"
+    )

@@ -184,6 +184,18 @@ Low-confidence, weakly supported or consequential interpretations can pause the 
 
 Human decisions should be stored and potentially become evaluation data.
 
+### Later analyst-review interface
+
+Once the backend HITL workflow exists, consider adding a small TypeScript
+analyst interface for reviewing findings and their cited filing pages. It could
+let an analyst approve, edit, reject, or request more research while keeping
+the investigation and review state in the Python backend.
+
+This should be introduced only when it serves the real review workflow, not as
+an additional technology for its own sake. Python remains the core language for
+ingestion, retrieval, investigation, and evaluation; TypeScript would cover the
+user-facing interaction layer.
+
 ## LLM-as-a-judge
 
 Do not implement this merely as "score the answer from 1–10."
