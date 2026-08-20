@@ -28,7 +28,16 @@ human-in-the-loop workflows are deliberately deferred until later phases.
 - Python 3.13
 - [`uv`](https://docs.astral.sh/uv/)
 - Docker with Docker Compose (Docker Desktop or OrbStack both work)
+- Tesseract OCR 5 with English language data
 - A Companies House REST API key
+
+Install Tesseract on macOS with Homebrew:
+
+```bash
+brew install tesseract
+```
+
+The application Docker image installs Tesseract automatically.
 
 Create a REST API key through the Companies House developer portal. Do not
 commit the key to Git.
