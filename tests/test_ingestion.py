@@ -34,7 +34,11 @@ def _profile_payload(company_status: str) -> dict[str, object]:
     }
 
 
-def _filing_history_payload(transaction_ids: list[str]) -> dict[str, object]:
+def _filing_history_payload(
+    transaction_ids: list[str],
+    *,
+    include_document_links: bool = True,
+) -> dict[str, object]:
     return {
         "items": [
             {
@@ -43,6 +47,16 @@ def _filing_history_payload(transaction_ids: list[str]) -> dict[str, object]:
                 "date": "2025-01-01",
                 "description": "accounts-with-accounts-type-full",
                 "type": "AA",
+                "links": (
+                    {
+                        "document_metadata": (
+                            "https://document-api.company-information.service.gov.uk/"
+                            f"document/{transaction_id}-document"
+                        )
+                    }
+                    if include_document_links
+                    else {}
+                ),
             }
             for transaction_id in transaction_ids
         ],
@@ -55,10 +69,18 @@ def _filing_history_payload(transaction_ids: list[str]) -> dict[str, object]:
 def _handler_for(
     company_status: str,
     transaction_ids: list[str],
+    *,
+    include_document_links: bool = True,
 ) -> AsyncMockHandler:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path.endswith("/filing-history"):
-            return httpx2.Response(200, json=_filing_history_payload(transaction_ids))
+            return httpx2.Response(
+                200,
+                json=_filing_history_payload(
+                    transaction_ids,
+                    include_document_links=include_document_links,
+                ),
+            )
         return httpx2.Response(200, json=_profile_payload(company_status))
 
     return handler
@@ -105,6 +127,8 @@ async def test_ingest_company_persists_profile_and_filings(
         )
     ).all()
     assert len(filings) == 2
+    assert filings[0][0].source_document_id is not None
+    assert filings[0][0].document_metadata_url is not None
 
 
 @pytest.mark.asyncio
@@ -131,3 +155,28 @@ async def test_ingest_company_is_idempotent(session: AsyncSession) -> None:
     company = await session.get(Company, TEST_COMPANY_NUMBER)
     assert company is not None
     assert company.company_status == "dissolved"
+
+
+@pytest.mark.asyncio
+async def test_ingest_company_allows_filing_without_document(
+    session: AsyncSession,
+) -> None:
+    async with _create_client(
+        _handler_for(
+            "active",
+            ["transaction-without-document"],
+            include_document_links=False,
+        )
+    ) as client:
+        await ingest_company(session, client, TEST_COMPANY_NUMBER)
+
+    filing = (
+        await session.execute(
+            select(Filing).where(
+                Filing.company_number == TEST_COMPANY_NUMBER,
+                Filing.transaction_id == "transaction-without-document",
+            )
+        )
+    ).scalar_one()
+    assert filing.source_document_id is None
+    assert filing.document_metadata_url is None

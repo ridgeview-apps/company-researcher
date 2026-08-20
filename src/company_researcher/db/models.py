@@ -71,6 +71,8 @@ class Filing(Base):
     barcode: Mapped[str | None] = mapped_column(Text)
     pages: Mapped[int | None] = mapped_column(Integer)
     paper_filed: Mapped[bool | None] = mapped_column(Boolean)
+    source_document_id: Mapped[str | None] = mapped_column(Text, index=True)
+    document_metadata_url: Mapped[str | None] = mapped_column(Text)
     source: Mapped[str] = mapped_column(Text, nullable=False, default="companies_house")
     raw_filing: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     retrieved_at: Mapped[datetime] = mapped_column(

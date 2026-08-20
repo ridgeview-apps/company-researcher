@@ -6,6 +6,9 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.companies_house import CompaniesHouseClient
+from company_researcher.companies_house.document_links import (
+    parse_document_metadata_url,
+)
 from company_researcher.companies_house.models import CompanyProfile, FilingHistory
 from company_researcher.db.models import Company, Filing
 
@@ -83,23 +86,32 @@ async def _upsert_filings(
     if not filing_history.items:
         return
 
-    rows: list[dict[str, Any]] = [
-        {
-            "company_number": company_number,
-            "transaction_id": item.transaction_id,
-            "category": item.category,
-            "type": item.type,
-            "description": item.description,
-            "date": item.date,
-            "action_date": item.action_date,
-            "barcode": item.barcode,
-            "pages": item.pages,
-            "paper_filed": item.paper_filed,
-            "raw_filing": item.model_dump(mode="json"),
-            "retrieved_at": retrieved_at,
-        }
-        for item in filing_history.items
-    ]
+    rows: list[dict[str, Any]] = []
+    for item in filing_history.items:
+        document_metadata_url = item.links.get("document_metadata")
+        source_document_id = (
+            parse_document_metadata_url(document_metadata_url)
+            if document_metadata_url is not None
+            else None
+        )
+        rows.append(
+            {
+                "company_number": company_number,
+                "transaction_id": item.transaction_id,
+                "category": item.category,
+                "type": item.type,
+                "description": item.description,
+                "date": item.date,
+                "action_date": item.action_date,
+                "barcode": item.barcode,
+                "pages": item.pages,
+                "paper_filed": item.paper_filed,
+                "source_document_id": source_document_id,
+                "document_metadata_url": document_metadata_url,
+                "raw_filing": item.model_dump(mode="json"),
+                "retrieved_at": retrieved_at,
+            }
+        )
     insert_statement = postgresql_insert(Filing).values(rows)
     update_columns = {
         column_name: insert_statement.excluded[column_name]
