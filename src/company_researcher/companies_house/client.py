@@ -16,6 +16,16 @@ from company_researcher.config import Settings
 COMPANY_NUMBER_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
 
 
+def normalize_company_number(company_number: str) -> str:
+    """Normalize and validate a Companies House company number."""
+    normalized_number = company_number.strip().upper()
+    if normalized_number.isdecimal():
+        normalized_number = normalized_number.zfill(8)
+    if not COMPANY_NUMBER_PATTERN.fullmatch(normalized_number):
+        raise ValueError("company_number must contain 8 letters or digits")
+    return normalized_number
+
+
 class CompaniesHouseClient(CompaniesHouseBaseClient):
     """Async client for the Companies House Public Data REST API."""
 
@@ -34,7 +44,7 @@ class CompaniesHouseClient(CompaniesHouseBaseClient):
 
     async def get_company_profile(self, company_number: str) -> CompanyProfile:
         """Fetch a company's current structured profile."""
-        normalized_number = self._normalize_company_number(company_number)
+        normalized_number = normalize_company_number(company_number)
         return await self._get_model(
             f"company/{normalized_number}",
             CompanyProfile,
@@ -53,7 +63,7 @@ class CompaniesHouseClient(CompaniesHouseBaseClient):
         if not 1 <= items_per_page <= 100:
             raise ValueError("items_per_page must be between 1 and 100")
 
-        normalized_number = self._normalize_company_number(company_number)
+        normalized_number = normalize_company_number(company_number)
         return await self._get_model(
             f"company/{normalized_number}/filing-history",
             FilingHistoryPage,
@@ -93,12 +103,3 @@ class CompaniesHouseClient(CompaniesHouseBaseClient):
             start_index = next_start_index
 
         return FilingHistory(items=items, total_count=total_count)
-
-    @staticmethod
-    def _normalize_company_number(company_number: str) -> str:
-        normalized_number = company_number.strip().upper()
-        if normalized_number.isdecimal():
-            normalized_number = normalized_number.zfill(8)
-        if not COMPANY_NUMBER_PATTERN.fullmatch(normalized_number):
-            raise ValueError("company_number must contain 8 letters or digits")
-        return normalized_number

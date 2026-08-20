@@ -206,6 +206,25 @@ updates the existing rows in place rather than creating duplicates.
 
 In VS Code, select **Run and Debug → CLI: Ingest Company**.
 
+## Persist a filing document
+
+After ingesting a company, download and persist one filing document by its
+Companies House transaction ID:
+
+```bash
+uv run company-researcher ingest-document 08130873 TRANSACTION_ID
+```
+
+The command requires an existing filing row with a Companies House document
+reference. It downloads the PDF, stores the original bytes under the configured
+`ARTIFACT_ROOT`, and records the filing relationship, source metadata, checksum,
+storage key, and retrieval timestamps in PostgreSQL. Repeating the command for
+unchanged content refreshes its retrieval metadata without creating a duplicate
+document version.
+
+Documents default to content-addressed paths beneath `data/artifacts`. The
+directory is ignored by Git and can be changed with `ARTIFACT_ROOT`.
+
 ## Quality checks
 
 Run the test suite:

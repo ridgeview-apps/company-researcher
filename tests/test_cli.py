@@ -11,6 +11,7 @@ from company_researcher.companies_house.exceptions import (
     CompaniesHouseRateLimitError,
     CompaniesHouseResponseError,
 )
+from company_researcher.document_ingestion import DocumentIngestionError
 
 
 def test_main_prints_inspection(
@@ -38,6 +39,24 @@ def test_main_prints_ingestion(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == "Ingested.\n"
+    assert captured.err == ""
+
+
+def test_main_prints_document_ingestion(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "run_document_ingestion",
+        lambda company_number, transaction_id: "Created document.",
+    )
+
+    exit_code = cli.main(["ingest-document", "08130873", "filing-transaction-id"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "Created document.\n"
     assert captured.err == ""
 
 
@@ -73,6 +92,11 @@ def test_main_prints_ingestion(
             CompaniesHouseResponseError,
             1,
             "Companies House error",
+        ),
+        (
+            DocumentIngestionError,
+            1,
+            "Document ingestion error",
         ),
     ],
 )
