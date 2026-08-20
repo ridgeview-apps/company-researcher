@@ -8,6 +8,7 @@ from company_researcher.companies_house.document_client import (
 )
 from company_researcher.companies_house.exceptions import (
     CompaniesHouseConfigurationError,
+    CompaniesHouseNotFoundError,
     CompaniesHouseResponseError,
 )
 from company_researcher.config import Settings
@@ -116,3 +117,72 @@ def test_from_settings_requires_api_key() -> None:
 
     with pytest.raises(CompaniesHouseConfigurationError):
         CompaniesHouseDocumentClient.from_settings(settings)
+
+
+@pytest.mark.asyncio
+async def test_get_document_content_follows_redirect_and_returns_pdf() -> None:
+    requests: list[httpx2.Request] = []
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if request.url.host == "document.example.test":
+            assert request.url.path == "/document/document-123/content"
+            assert request.headers["accept"] == "application/pdf"
+            return httpx2.Response(
+                302,
+                headers={"Location": "https://download.example.test/accounts.pdf"},
+                request=request,
+            )
+
+        assert request.url == "https://download.example.test/accounts.pdf"
+        assert "authorization" not in request.headers
+        return httpx2.Response(
+            200,
+            headers={"Content-Type": "application/pdf"},
+            content=b"%PDF-1.7 test document",
+            request=request,
+        )
+
+    async with create_client(httpx2.MockTransport(handler)) as client:
+        document = await client.get_document_content(" document-123 ")
+
+    assert len(requests) == 2
+    assert document.document_id == "document-123"
+    assert document.media_type == "application/pdf"
+    assert document.content == b"%PDF-1.7 test document"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content_type", "content", "expected_message"),
+    [
+        ("text/html", b"not a PDF", "content type"),
+        ("application/pdf", b"", "empty document"),
+    ],
+)
+async def test_get_document_content_rejects_invalid_content(
+    content_type: str,
+    content: bytes,
+    expected_message: str,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={"Content-Type": content_type},
+            content=content,
+            request=request,
+        )
+
+    async with create_client(httpx2.MockTransport(handler)) as client:
+        with pytest.raises(CompaniesHouseResponseError, match=expected_message):
+            await client.get_document_content("document-123")
+
+
+@pytest.mark.asyncio
+async def test_get_document_content_maps_upstream_error() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(404, request=request)
+
+    async with create_client(httpx2.MockTransport(handler)) as client:
+        with pytest.raises(CompaniesHouseNotFoundError):
+            await client.get_document_content("document-123")

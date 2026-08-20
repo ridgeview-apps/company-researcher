@@ -65,14 +65,7 @@ class CompaniesHouseBaseClient:
         *,
         params: dict[str, int] | None = None,
     ) -> ResponseModel:
-        try:
-            response = await self._client.get(path, params=params)
-        except httpx2.RequestError as error:
-            raise CompaniesHouseConnectionError(
-                "Could not connect to Companies House"
-            ) from error
-
-        self._raise_for_status(response)
+        response = await self._get_response(path, params=params)
 
         try:
             payload: object = response.json()
@@ -81,6 +74,29 @@ class CompaniesHouseBaseClient:
             raise CompaniesHouseResponseError(
                 "Companies House returned an invalid response payload"
             ) from error
+
+    async def _get_response(
+        self,
+        path: str,
+        *,
+        params: dict[str, int] | None = None,
+        headers: dict[str, str] | None = None,
+        follow_redirects: bool = False,
+    ) -> httpx2.Response:
+        try:
+            response = await self._client.get(
+                path,
+                params=params,
+                headers=headers,
+                follow_redirects=follow_redirects,
+            )
+        except httpx2.RequestError as error:
+            raise CompaniesHouseConnectionError(
+                "Could not connect to Companies House"
+            ) from error
+
+        self._raise_for_status(response)
+        return response
 
     @staticmethod
     def _raise_for_status(response: httpx2.Response) -> None:
