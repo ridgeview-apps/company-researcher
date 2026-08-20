@@ -5,6 +5,7 @@ import tempfile
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import Protocol
 
 SAFE_EXTENSION_PATTERN = re.compile(r"^[a-z0-9]+$")
 
@@ -24,6 +25,14 @@ class StoredArtifact:
     storage_key: str
     sha256: str
     content_length: int
+
+
+class ArtifactStore(Protocol):
+    """Storage boundary for immutable source artifacts."""
+
+    async def put(self, content: bytes, *, extension: str) -> StoredArtifact:
+        """Store content and return its stable reference."""
+        ...
 
 
 class LocalArtifactStore:
