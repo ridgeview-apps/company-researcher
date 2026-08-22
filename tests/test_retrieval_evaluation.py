@@ -134,7 +134,8 @@ async def test_evaluate_question_scores_a_retrieved_relevant_page(
     )
     question = EvaluationQuestion(
         id="q-alpha",
-        text="alpha bravo",
+        text="Where does alpha bravo appear?",
+        query="alpha bravo",
         relevant_pages=(
             RelevantPage(transaction_id="eval-transaction-alpha", page_number=1),
         ),
@@ -159,7 +160,8 @@ async def test_evaluate_question_scores_zero_for_unretrieved_page(
     )
     question = EvaluationQuestion(
         id="q-beta",
-        text="zulu yankee whiskey",
+        text="Where does zulu yankee whiskey appear?",
+        query="zulu yankee whiskey",
         relevant_pages=(
             RelevantPage(transaction_id="eval-transaction-beta", page_number=1),
         ),
@@ -179,7 +181,8 @@ async def test_evaluate_question_raises_for_unresolvable_transaction_id(
 ) -> None:
     question = EvaluationQuestion(
         id="q-missing",
-        text="anything",
+        text="Anything?",
+        query="anything",
         relevant_pages=(RelevantPage(transaction_id="does-not-exist", page_number=1),),
     )
 

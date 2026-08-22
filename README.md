@@ -277,10 +277,14 @@ stemmed `tsquery`, accelerated by a GIN expression index) with no embeddings,
 vector search, or LLM involved. The command reports Recall@K and Mean
 Reciprocal Rank per question and averaged across the dataset.
 
-### Measured results (naive lexical baseline)
+### Measured results
 
-Using each question's full natural-language text as the search query, against
-the 6-question Gymshark evaluation set:
+Two lexical query strategies have been measured against the same 6-question
+Gymshark evaluation set, using the same `ts_rank`/GIN-indexed search underneath
+both times — only the text sent as the query changed.
+
+**Full question sentence as the query** (each question's `text` field — the
+first thing tried):
 
 | Question | Recall@5 | Recall@10 | Reciprocal rank |
 | --- | --- | --- | --- |
@@ -292,14 +296,45 @@ the 6-question Gymshark evaluation set:
 | q6-going-concern-fy2023 | 0.00 | 0.00 | 0.08 |
 | **Mean** | **0.000** | **0.000** | **0.030** |
 
-This naive baseline performs poorly: matching a whole natural-language
-question against single pages by lexical term overlap is a weak signal,
-especially for questions whose relevant pages are spread across several
-documents (Q2, Q4) or that ask about the *absence* of a difference (Q3).
-This is the deliberate starting point the project's later retrieval work
-(hybrid search, reranking, metadata filtering) is meant to improve upon and
-be measured against, not a result to take at face value as "good" or "bad"
-in isolation.
+Matching a whole natural-language question against single pages by lexical
+term overlap is a weak signal, especially for questions whose relevant pages
+are spread across several documents (Q2, Q4) or that ask about the *absence*
+of a difference (Q3).
+
+**Short keyword query as the query** (each question's `query` field — a few
+words chosen to reflect what a person would actually type into a search box,
+tuned by measuring against the persisted corpus rather than guessed; this is
+the query the CLI command actually issues; see the caveat below the results):
+
+| Question | Recall@5 | Recall@10 | Reciprocal rank |
+| --- | --- | --- | --- |
+| q1-fy2025-turnover | 1.00 | 1.00 | 0.50 |
+| q2-turnover-trend-fy2021-fy2025 | 0.75 | 1.00 | 0.50 |
+| q3-fy2022-amendment-comparison | 0.00 | 0.50 | 0.14 |
+| q4-directors-fy2021-fy2025 | 1.00 | 1.00 | 1.00 |
+| q5-dividends-fy2022-vs-fy2025 | 0.50 | 1.00 | 0.33 |
+| q6-going-concern-fy2023 | 0.50 | 0.50 | 0.20 |
+| **Mean** | **0.625** | **0.833** | **0.446** |
+
+Query wording, not the ranking mechanism, was the dominant cause of the first
+result: the same OR-combined `ts_rank` search goes from finding nothing to
+finding most relevant pages once it is given a short, targeted query instead
+of a full sentence. Q3 remains the hardest case even with a good query — its
+relevant pages span two different vocabularies (profit-and-loss language and
+balance-sheet language, for both the original and amended documents), which a
+single short query struggles to boost simultaneously. That is a genuine,
+still-open limitation of pure lexical search on this corpus, not a bug, and a
+reasonable candidate for what hybrid retrieval should be measured against
+next.
+
+**Caveat**: each `query` string was hand-tuned by trial and error directly
+against these same 6 questions' known-relevant pages, not chosen blind or
+validated against held-out questions. So this result shows that a human who
+already knows the correct answer can hand-craft a query that finds it — it
+does not show that this approach would generalize well to a genuinely new,
+unseen question. A more rigorous version of this step would hold out some
+questions during query tuning, or replace hand-picked queries with an
+automated, generalizable query-construction strategy.
 
 ## Quality checks
 

@@ -26,10 +26,17 @@ class RelevantPage:
 
 @dataclass(frozen=True)
 class EvaluationQuestion:
-    """One retrieval question and the pages a human identified as relevant to it."""
+    """One retrieval question and the pages a human identified as relevant to it.
+
+    `text` is the natural-language question, kept for reporting. `query` is
+    the short keyword string actually issued to lexical search: matching the
+    full question sentence performs far worse than a short query against
+    PostgreSQL's OR-combined term ranking, so the two are kept distinct.
+    """
 
     id: str
     text: str
+    query: str
     relevant_pages: tuple[RelevantPage, ...]
 
 
@@ -48,6 +55,7 @@ def load_evaluation_dataset(path: Path) -> EvaluationDataset:
         EvaluationQuestion(
             id=question["id"],
             text=question["text"],
+            query=question["query"],
             relevant_pages=tuple(
                 RelevantPage(
                     transaction_id=page["transaction_id"],
@@ -129,7 +137,7 @@ async def evaluate_question(
     relevant = await _resolve_relevant_extraction_pages(
         session, company_number, question.relevant_pages
     )
-    matches = await search_pages(session, question.text, limit=search_depth)
+    matches = await search_pages(session, question.query, limit=search_depth)
     retrieved = [(match.document_extraction_id, match.page_number) for match in matches]
 
     recall_at_k = {

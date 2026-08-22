@@ -2,7 +2,7 @@
   "dataset": "gymshark_accounts_v1",
   "company_number": "08130873",
   "company_name": "GYMSHARK LTD",
-  "methodology": "Relevant pages were identified manually by reading the persisted OCR page text for each document (not invented from filing metadata alone). Documents are identified by their stable Companies House filing transaction_id rather than internal database identity columns, so the dataset survives a database reseed.",
+  "methodology": "Relevant pages were identified manually by reading the persisted OCR page text for each document (not invented from filing metadata alone). Documents are identified by their stable Companies House filing transaction_id rather than internal database identity columns, so the dataset survives a database reseed. Each question has both a natural-language 'text' (for human readability and reporting) and a short 'query' (the terms actually issued to lexical search) because matching a full question sentence against single pages performs far worse than a short keyword query for PostgreSQL's OR-combined term ranking; query wording was chosen by measuring against the persisted corpus, not guessed.",
   "documents": [
     {
       "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4",
@@ -39,6 +39,7 @@
     {
       "id": "q1-fy2025-turnover",
       "text": "What was Gymshark's turnover for the year ended 31 July 2025, and how did it compare to the prior year?",
+      "query": "Gymshark turnover 2025",
       "relevant_pages": [
         { "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4", "page_number": 20 }
       ],
@@ -47,6 +48,7 @@
     {
       "id": "q2-turnover-trend-fy2021-fy2025",
       "text": "How did Gymshark's turnover change year-over-year from FY2021 through FY2025?",
+      "query": "turnover cost of sales gross profit",
       "relevant_pages": [
         { "transaction_id": "MzMzOTgxMDE1NmFkaXF6a2N4", "page_number": 16 },
         { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 22 },
@@ -58,6 +60,7 @@
     {
       "id": "q3-fy2022-amendment-comparison",
       "text": "Did the amended FY2022 accounts (AAMD) change the reported turnover, profit, or balance sheet figures compared to the original FY2022 accounts?",
+      "query": "statement of financial position net assets 2022",
       "relevant_pages": [
         { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 22 },
         { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 23 },
@@ -69,6 +72,7 @@
     {
       "id": "q4-directors-fy2021-fy2025",
       "text": "Who were Gymshark's directors and company secretary according to each set of annual accounts from FY2021 to FY2025?",
+      "query": "directors secretary registered office auditor",
       "relevant_pages": [
         { "transaction_id": "MzMzOTgxMDE1NmFkaXF6a2N4", "page_number": 2 },
         { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 2 },
@@ -80,6 +84,7 @@
     {
       "id": "q5-dividends-fy2022-vs-fy2025",
       "text": "What dividends did Gymshark pay in FY2022, and how does that compare to FY2025?",
+      "query": "Gymshark dividends paid",
       "relevant_pages": [
         { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 41 },
         { "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4", "page_number": 13 }
@@ -89,6 +94,7 @@
     {
       "id": "q6-going-concern-fy2023",
       "text": "What did the directors identify as the Company's going-concern position in the FY2023 accounts?",
+      "query": "going concern committed revolving credit facility covenant",
       "relevant_pages": [
         { "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4", "page_number": 29 },
         { "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4", "page_number": 30 }

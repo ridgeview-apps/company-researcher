@@ -20,12 +20,14 @@ manually labelled Gymshark retrieval evaluation corpus
 (`evaluation/gymshark_retrieval_questions.json`). Measured results are in
 `README.md`.
 
-The naive lexical baseline scores poorly against the labelled corpus (Mean
-Recall@5 = Recall@10 = 0.0, MRR = 0.03) — matching a whole natural-language
-question against single pages by term overlap is a weak signal. That result
-should inform, but not by itself decide, the next milestone: whether it is
-worth first improving the deterministic lexical query before introducing
-embeddings or hybrid retrieval.
+Matching a full natural-language question against single pages scored poorly
+(Mean Recall@5 = Recall@10 = 0.0, MRR = 0.03). Using a short, targeted keyword
+query instead — same `ts_rank` ranking, only the query text changed — raised
+this to Mean Recall@5 = 0.625, Recall@10 = 0.833, MRR = 0.446. Both results are
+recorded in `README.md`. The remaining gap (particularly on
+`q3-fy2022-amendment-comparison`, whose relevant pages span two different
+vocabularies across two documents) is a reasonable candidate for what hybrid
+retrieval should be measured against next.
 
 Work incrementally. The next milestone has not yet been agreed. Challenge and
 refine any proposed next milestone against the actual codebase and persisted
