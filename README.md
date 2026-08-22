@@ -256,6 +256,24 @@ extracts every page with Tesseract, and persists the page text together with
 the exact OCR and renderer configuration. Repeating the command with the same
 document and configuration reuses the successful extraction.
 
+## Measure the lexical-search retrieval baseline
+
+Score PostgreSQL full-text search against a labelled evaluation dataset:
+
+```bash
+uv run company-researcher evaluate-retrieval
+```
+
+Without an argument, the command evaluates
+[`evaluation/gymshark_retrieval_questions.json`](evaluation/gymshark_retrieval_questions.json):
+a small, manually labelled set of retrieval questions over Gymshark Ltd's
+persisted accounts filings, including an original/amended filing pair. Each
+question's text is matched against `document_pages` using a
+PostgreSQL-native, deterministic ranking (`ts_rank` over an OR-combined,
+stemmed `tsquery`, accelerated by a GIN expression index) with no embeddings,
+vector search, or LLM involved. The command reports Recall@K and Mean
+Reciprocal Rank per question and averaged across the dataset.
+
 ## Quality checks
 
 Run the test suite:
@@ -288,19 +306,22 @@ uv run ruff format .
 ```text
 .
 ├── compose.yaml                       # Local PostgreSQL service
+├── evaluation/                         # Labelled retrieval evaluation datasets
 ├── migrations/                        # Alembic schema revisions
 ├── src/company_researcher/
 │   ├── api/                            # FastAPI routes
 │   ├── companies_house/                # Replaceable source integration
 │   ├── db/                             # SQLAlchemy engine, sessions, and models
 │   ├── artifact_store.py               # Content-addressed source artifacts
-│   ├── cli.py                          # Inspection, ingestion, and extraction CLI
+│   ├── cli.py                          # Inspection, ingestion, extraction, and evaluation CLI
 │   ├── config.py                       # Environment-backed settings
 │   ├── document_ingestion.py           # Filing-document acquisition and persistence
 │   ├── extraction_persistence.py       # Idempotent page-extraction persistence
 │   ├── ingestion.py                    # Idempotent persistence of source data
+│   ├── lexical_search.py               # PostgreSQL full-text page search
 │   ├── main.py                         # FastAPI application factory
-│   └── pdf_extraction.py               # Page-aware local PDF OCR
+│   ├── pdf_extraction.py               # Page-aware local PDF OCR
+│   └── retrieval_evaluation.py         # Recall@K / MRR scoring against labelled data
 ├── tests/                              # Focused unit and API tests
 ├── .env.example                        # Safe configuration template
 ├── alembic.ini                         # Alembic configuration

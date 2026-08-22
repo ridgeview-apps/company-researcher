@@ -3,6 +3,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -30,6 +31,13 @@ from company_researcher.document_ingestion import (
 from company_researcher.extraction_persistence import extract_filing_document
 from company_researcher.ingestion import ingest_company
 from company_researcher.pdf_extraction import PdfExtractionError, TesseractPdfExtractor
+from company_researcher.retrieval_evaluation import (
+    RetrievalEvaluationError,
+    load_evaluation_dataset,
+    run_evaluation,
+)
+
+DEFAULT_EVALUATION_DATASET = "evaluation/gymshark_retrieval_questions.json"
 
 
 class DocumentExtractionCommandError(Exception):
@@ -83,6 +91,17 @@ def build_parser() -> argparse.ArgumentParser:
         "filing_document_id",
         type=int,
         help="Database ID of a previously downloaded filing document.",
+    )
+
+    evaluation_parser = subparsers.add_parser(
+        "evaluate-retrieval",
+        help="Measure lexical-search Recall@K and MRR against a labelled question set.",
+    )
+    evaluation_parser.add_argument(
+        "dataset_path",
+        nargs="?",
+        default=DEFAULT_EVALUATION_DATASET,
+        help=f"Path to an evaluation dataset (default: {DEFAULT_EVALUATION_DATASET}).",
     )
     return parser
 
@@ -207,12 +226,47 @@ def run_document_extraction(filing_document_id: int) -> str:
     return asyncio.run(extract_document_command(filing_document_id))
 
 
+async def evaluate_retrieval_command(dataset_path: str) -> str:
+    """Measure lexical-search Recall@K and MRR against a labelled question set."""
+    dataset = load_evaluation_dataset(Path(dataset_path))
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            summary = await run_evaluation(session, dataset)
+    finally:
+        await engine.dispose()
+
+    lines = []
+    for metrics in summary.per_question:
+        recall_text = ", ".join(
+            f"R@{k}={value:.2f}" for k, value in metrics.recall_at_k.items()
+        )
+        lines.append(
+            f"{metrics.question_id}: {recall_text}, RR={metrics.reciprocal_rank:.2f}"
+        )
+
+    mean_recall_text = ", ".join(
+        f"R@{k}={value:.3f}" for k, value in summary.mean_recall_at_k.items()
+    )
+    lines.append(f"Mean: {mean_recall_text}, MRR={summary.mean_reciprocal_rank:.3f}")
+    return "\n".join(lines)
+
+
+def run_retrieval_evaluation(dataset_path: str) -> str:
+    """Run one retrieval evaluation from the synchronous CLI."""
+    return asyncio.run(evaluate_retrieval_command(dataset_path))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Company Researcher command-line interface."""
     args = build_parser().parse_args(argv)
 
     try:
-        if args.command == "extract-document":
+        if args.command == "evaluate-retrieval":
+            output = run_retrieval_evaluation(args.dataset_path)
+        elif args.command == "extract-document":
             output = run_document_extraction(args.filing_document_id)
         elif args.command == "ingest-document":
             output = run_document_ingestion(args.company_number, args.transaction_id)
@@ -244,6 +298,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         PdfExtractionError,
     ) as error:
         print(f"Document extraction error: {error}", file=sys.stderr)
+        return 1
+    except RetrievalEvaluationError as error:
+        print(f"Retrieval evaluation error: {error}", file=sys.stderr)
         return 1
 
     print(output)

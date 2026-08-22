@@ -1,0 +1,49 @@
+from dataclasses import dataclass
+
+from sqlalchemy import Text, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from company_researcher.db.models import DocumentPage
+
+_TEXT_SEARCH_CONFIGURATION = "english"
+
+
+@dataclass(frozen=True)
+class PageMatch:
+    """One document page matched by a lexical search query, ranked by relevance."""
+
+    document_extraction_id: int
+    page_number: int
+    rank: float
+
+
+async def search_pages(
+    session: AsyncSession, query: str, *, limit: int
+) -> list[PageMatch]:
+    """Rank document pages by PostgreSQL full-text search relevance to `query`.
+
+    Query terms are OR-combined rather than AND-combined: `plainto_tsquery`
+    alone requires every term to appear on the same page, which almost never
+    holds for a multi-word natural-language question against a single page.
+    """
+    stemmed_terms = func.plainto_tsquery(_TEXT_SEARCH_CONFIGURATION, query).cast(Text)
+    tsquery = func.to_tsquery(
+        _TEXT_SEARCH_CONFIGURATION, func.replace(stemmed_terms, " & ", " | ")
+    )
+    tsvector = func.to_tsvector(_TEXT_SEARCH_CONFIGURATION, DocumentPage.text)
+    rank = func.ts_rank(tsvector, tsquery).label("rank")
+    statement = (
+        select(DocumentPage.document_extraction_id, DocumentPage.page_number, rank)
+        .where(tsvector.op("@@")(tsquery))
+        .order_by(rank.desc())
+        .limit(limit)
+    )
+    result = await session.execute(statement)
+    return [
+        PageMatch(
+            document_extraction_id=row.document_extraction_id,
+            page_number=row.page_number,
+            rank=row.rank,
+        )
+        for row in result
+    ]
