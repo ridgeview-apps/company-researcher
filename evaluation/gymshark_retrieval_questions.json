@@ -1,0 +1,99 @@
+{
+  "dataset": "gymshark_accounts_v1",
+  "company_number": "08130873",
+  "company_name": "GYMSHARK LTD",
+  "methodology": "Relevant pages were identified manually by reading the persisted OCR page text for each document (not invented from filing metadata alone). Documents are identified by their stable Companies House filing transaction_id rather than internal database identity columns, so the dataset survives a database reseed.",
+  "documents": [
+    {
+      "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4",
+      "filing_type": "AA",
+      "period_end": "2025-07-31",
+      "role": "current"
+    },
+    {
+      "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4",
+      "filing_type": "AA",
+      "period_end": "2023-07-31",
+      "role": "prior"
+    },
+    {
+      "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4",
+      "filing_type": "AA",
+      "period_end": "2022-07-31",
+      "role": "original"
+    },
+    {
+      "transaction_id": "MzQwMTE2OTc4MmFkaXF6a2N4",
+      "filing_type": "AAMD",
+      "period_end": "2022-07-31",
+      "role": "amended"
+    },
+    {
+      "transaction_id": "MzMzOTgxMDE1NmFkaXF6a2N4",
+      "filing_type": "AA",
+      "period_end": "2021-07-31",
+      "role": "prior"
+    }
+  ],
+  "questions": [
+    {
+      "id": "q1-fy2025-turnover",
+      "text": "What was Gymshark's turnover for the year ended 31 July 2025, and how did it compare to the prior year?",
+      "relevant_pages": [
+        { "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4", "page_number": 20 }
+      ],
+      "note": "Profit and loss account: turnover GBP490,142k (2025) vs GBP458,624k (2024)."
+    },
+    {
+      "id": "q2-turnover-trend-fy2021-fy2025",
+      "text": "How did Gymshark's turnover change year-over-year from FY2021 through FY2025?",
+      "relevant_pages": [
+        { "transaction_id": "MzMzOTgxMDE1NmFkaXF6a2N4", "page_number": 16 },
+        { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 22 },
+        { "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4", "page_number": 24 },
+        { "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4", "page_number": 20 }
+      ],
+      "note": "Turnover confirmed on each period's statement of comprehensive income / profit and loss account: FY2021 GBP437,629k, FY2022 GBP349,054k, FY2023 GBP403,818k, FY2025 GBP490,142k (FY2024 GBP458,624k as a comparative on the FY2025 statement)."
+    },
+    {
+      "id": "q3-fy2022-amendment-comparison",
+      "text": "Did the amended FY2022 accounts (AAMD) change the reported turnover, profit, or balance sheet figures compared to the original FY2022 accounts?",
+      "relevant_pages": [
+        { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 22 },
+        { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 23 },
+        { "transaction_id": "MzQwMTE2OTc4MmFkaXF6a2N4", "page_number": 22 },
+        { "transaction_id": "MzQwMTE2OTc4MmFkaXF6a2N4", "page_number": 23 }
+      ],
+      "note": "Manually verified: the extracted profit and loss and balance sheet figures are identical between the original and amended documents. Every page-level text difference found between the two documents was OCR noise (character misreads, quote-mark style), not a substantive restatement. This question is deliberately a case where the correct grounded answer is 'no material change found', not a positive finding."
+    },
+    {
+      "id": "q4-directors-fy2021-fy2025",
+      "text": "Who were Gymshark's directors and company secretary according to each set of annual accounts from FY2021 to FY2025?",
+      "relevant_pages": [
+        { "transaction_id": "MzMzOTgxMDE1NmFkaXF6a2N4", "page_number": 2 },
+        { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 2 },
+        { "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4", "page_number": 2 },
+        { "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4", "page_number": 2 }
+      ],
+      "note": "Company information page of each filing. FY2021: B Francis, S Hewitt, P Richardson (resigned 31 Mar 2022), P Daw; secretary C Reed. FY2022: B Francis, N Chana; secretary C Reed. FY2023: B Francis, M Dunn, N A McElhinney; secretary C Reed. FY2025: B Francis, N A McElhinney, R Sanders (appointed 1 Feb 2025); secretary C Reed."
+    },
+    {
+      "id": "q5-dividends-fy2022-vs-fy2025",
+      "text": "What dividends did Gymshark pay in FY2022, and how does that compare to FY2025?",
+      "relevant_pages": [
+        { "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4", "page_number": 41 },
+        { "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4", "page_number": 13 }
+      ],
+      "note": "FY2022 dividends note: GBP10,600k paid (2021: GBPnil). FY2025 directors' report states GBP26.0m paid (2024: GBP12.7m)."
+    },
+    {
+      "id": "q6-going-concern-fy2023",
+      "text": "What did the directors identify as the Company's going-concern position in the FY2023 accounts?",
+      "relevant_pages": [
+        { "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4", "page_number": 29 },
+        { "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4", "page_number": 30 }
+      ],
+      "note": "Going concern note references a GBP50m committed revolving credit facility (plus GBP30m accordion) expiring December 2024, quarterly covenant testing, and downside-scenario modelling."
+    }
+  ]
+}
