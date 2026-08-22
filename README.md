@@ -23,14 +23,17 @@ can:
 - download filing PDFs and preserve their metadata and immutable original bytes
   in content-addressed storage;
 - verify stored artifacts against their recorded SHA-256 checksums;
-- extract image-only PDFs page by page with local Tesseract OCR; and
+- extract image-only PDFs page by page with local Tesseract OCR;
 - persist page text and exact extraction provenance, reusing an existing
-  successful extraction when its document and configuration are unchanged.
+  successful extraction when its document and configuration are unchanged; and
+- measure a deterministic PostgreSQL lexical-search baseline against a small,
+  manually labelled retrieval evaluation corpus using Recall@K and MRR (see
+  [Measure the lexical-search retrieval baseline](#measure-the-lexical-search-retrieval-baseline)
+  below for the measured results).
 
-The next phase establishes a small labelled retrieval corpus and a deterministic
-PostgreSQL lexical-search baseline. LLM generation, embeddings, hybrid
-retrieval, LangGraph, temporal analysis, and human-in-the-loop workflows remain
-deliberately deferred until their evidence and retrieval foundations exist.
+LLM generation, embeddings, hybrid retrieval, LangGraph, temporal analysis, and
+human-in-the-loop workflows remain deliberately deferred until their evidence
+and retrieval foundations exist.
 
 ## Prerequisites
 
@@ -273,6 +276,30 @@ PostgreSQL-native, deterministic ranking (`ts_rank` over an OR-combined,
 stemmed `tsquery`, accelerated by a GIN expression index) with no embeddings,
 vector search, or LLM involved. The command reports Recall@K and Mean
 Reciprocal Rank per question and averaged across the dataset.
+
+### Measured results (naive lexical baseline)
+
+Using each question's full natural-language text as the search query, against
+the 6-question Gymshark evaluation set:
+
+| Question | Recall@5 | Recall@10 | Reciprocal rank |
+| --- | --- | --- | --- |
+| q1-fy2025-turnover | 0.00 | 0.00 | 0.04 |
+| q2-turnover-trend-fy2021-fy2025 | 0.00 | 0.00 | 0.00 |
+| q3-fy2022-amendment-comparison | 0.00 | 0.00 | 0.00 |
+| q4-directors-fy2021-fy2025 | 0.00 | 0.00 | 0.00 |
+| q5-dividends-fy2022-vs-fy2025 | 0.00 | 0.00 | 0.06 |
+| q6-going-concern-fy2023 | 0.00 | 0.00 | 0.08 |
+| **Mean** | **0.000** | **0.000** | **0.030** |
+
+This naive baseline performs poorly: matching a whole natural-language
+question against single pages by lexical term overlap is a weak signal,
+especially for questions whose relevant pages are spread across several
+documents (Q2, Q4) or that ask about the *absence* of a difference (Q3).
+This is the deliberate starting point the project's later retrieval work
+(hybrid search, reranking, metadata filtering) is meant to improve upon and
+be measured against, not a result to take at face value as "good" or "bad"
+in isolation.
 
 ## Quality checks
 

@@ -12,25 +12,31 @@ Read `docs/project-brief.md` before making architectural or scope decisions.
 
 ## Current scope
 
-Days 1–3 are complete. The repository can ingest company data and filing PDFs,
+Days 1–4 are complete. The repository can ingest company data and filing PDFs,
 store immutable source artifacts by checksum, extract image-only PDFs with
-page-aware OCR, and persist reproducible extraction provenance and page text.
+page-aware OCR, persist reproducible extraction provenance and page text, and
+measure a deterministic PostgreSQL lexical-search baseline against a small,
+manually labelled Gymshark retrieval evaluation corpus
+(`evaluation/gymshark_retrieval_questions.json`). Measured results are in
+`README.md`.
 
-Work incrementally. The immediate milestone is to establish a small retrieval
-evaluation corpus and a deterministic PostgreSQL lexical-search baseline:
+The naive lexical baseline scores poorly against the labelled corpus (Mean
+Recall@5 = Recall@10 = 0.0, MRR = 0.03) — matching a whole natural-language
+question against single pages by term overlap is a weak signal. That result
+should inform, but not by itself decide, the next milestone: whether it is
+worth first improving the deterministic lexical query before introducing
+embeddings or hybrid retrieval.
 
-- inventory and deliberately select a small set of development/evaluation
-  filings, initially focused on Gymshark;
-- ingest and extract additional documents one at a time;
-- define retrieval questions and manually identify relevant pages before
-  tuning retrieval; and
-- measure the lexical baseline with deterministic metrics such as Recall@K and
-  MRR.
+Work incrementally. The next milestone has not yet been agreed. Challenge and
+refine any proposed next milestone against the actual codebase and persisted
+data before implementing it, the same way the retrieval evaluation milestone
+was refined before any schema or code was added.
 
 Do not add LLM generation, LangGraph, HITL, LLM judges, embeddings, vector or
 hybrid retrieval, reranking, advanced RAG, or hard-coded historical as-of
-behavior until the relevant project phase. Keep evaluation work limited to the
-small dataset and deterministic retrieval metrics needed for the baseline.
+behavior until the relevant project phase and until deliberately agreed as the
+next milestone. Keep evaluation work limited to the small dataset and
+deterministic retrieval metrics needed for the baseline.
 
 ## Engineering conventions
 
