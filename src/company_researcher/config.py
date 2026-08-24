@@ -30,3 +30,7 @@ class Settings(BaseSettings):
     companies_house_document_base_url: AnyHttpUrl = AnyHttpUrl(
         "https://document-api.company-information.service.gov.uk"
     )
+
+    openai_api_key: SecretStr | None = None
+    openai_base_url: AnyHttpUrl = AnyHttpUrl("https://api.openai.com/v1")
+    openai_embedding_model: str = "text-embedding-3-small"
