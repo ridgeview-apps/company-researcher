@@ -440,6 +440,24 @@ been reasonably explored on this corpus first, rather than skipped.
 
 ## Quality checks
 
+Most of this project's tests exercise a real local PostgreSQL instance (the
+`db` service from [Start PostgreSQL](#start-postgresql)) rather than mocking
+the database. That's a deliberate choice, not an oversight: a meaningful
+share of this codebase's correctness lives in Postgres-specific behavior —
+`ts_rank` full-text search ranking, GIN index usage, constraint enforcement,
+migrations — that a mock cannot faithfully reproduce. The known limitation is
+that these tests currently share the same development database as manually
+ingested evaluation data, rather than an isolated or ephemeral test database;
+they rely on scoped cleanup and deliberately distinctive fixture data (see
+[`test_lexical_search.py`](tests/test_lexical_search.py)) to avoid colliding
+with it. A dedicated test database, or wrapping each test in a transaction
+that is rolled back afterwards, would be the more rigorous fix. Start the
+database before running the suite:
+
+```bash
+docker compose up -d db
+```
+
 Run the test suite:
 
 ```bash
