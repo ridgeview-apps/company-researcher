@@ -14,4 +14,5 @@ def test_settings_have_local_defaults() -> None:
     assert settings.companies_house_api_key is None
     assert settings.openai_api_key is None
     assert settings.openai_embedding_model == "text-embedding-3-small"
+    assert settings.openai_chat_model == "gpt-4o-mini"
     assert settings.database_url.startswith("postgresql+asyncpg://")
