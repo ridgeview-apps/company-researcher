@@ -113,6 +113,16 @@ rankings unevenly, filtering out a clearly weaker method before fusing, or
 a different combination strategy remain open, deliberately unexplored
 questions rather than assumed next steps.
 
+Further tuning of that fusion (asymmetric weighting, filtering out the
+weaker method, a different combination strategy) was considered and
+deliberately deferred rather than pursued now: with only 6 evaluation
+questions, tuning fusion parameters against them risks the same
+hand-tuning bias already flagged for the lexical query, with no evidence
+it would generalize. The LangGraph investigation-agent milestone is the
+deliberately agreed next step instead, not an assumed one; it will inherit
+retrieval's current limitations, particularly the temporal-disambiguation
+gap diagnosed above, rather than block on further retrieval tuning.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or
