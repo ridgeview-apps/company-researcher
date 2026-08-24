@@ -1,11 +1,19 @@
 from collections.abc import Sequence
 from types import TracebackType
-from typing import Self
+from typing import Protocol, Self
 
 import httpx2
 from pydantic import BaseModel, ValidationError
 
 from company_researcher.config import Settings
+
+
+class EmbeddingsProvider(Protocol):
+    """Boundary for batch text embedding."""
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed a batch of texts, returning one vector per input in the same order."""
+        ...
 
 
 class EmbeddingsError(Exception):

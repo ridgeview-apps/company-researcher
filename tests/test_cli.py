@@ -13,8 +13,14 @@ from company_researcher.companies_house.exceptions import (
     CompaniesHouseRateLimitError,
     CompaniesHouseResponseError,
 )
-from company_researcher.db.models import FilingDocument
+from company_researcher.db.models import (
+    EMBEDDING_DIMENSIONS,
+    DocumentExtraction,
+    FilingDocument,
+)
 from company_researcher.document_ingestion import DocumentIngestionError
+from company_researcher.embedding_persistence import EmbeddingPersistenceResult
+from company_researcher.embeddings_client import EmbeddingsError
 from company_researcher.extraction_persistence import ExtractionPersistenceResult
 from company_researcher.pdf_extraction import PdfExtractionError
 
@@ -153,6 +159,101 @@ async def test_extract_document_command_orchestrates_persisted_extraction(
     engine.dispose.assert_awaited_once_with()
 
 
+def test_main_prints_document_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "run_document_embedding",
+        lambda document_extraction_id: "Created embedding.",
+    )
+
+    exit_code = cli.main(["embed-document", "42"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "Created embedding.\n"
+    assert captured.err == ""
+
+
+def test_main_reports_document_embedding_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_embedding(document_extraction_id: int) -> str:
+        raise EmbeddingsError("safe embeddings failure")
+
+    monkeypatch.setattr(cli, "run_document_embedding", fail_embedding)
+
+    exit_code = cli.main(["embed-document", "42"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "Document embedding error: safe embeddings failure\n"
+
+
+@pytest.mark.asyncio
+async def test_embed_document_command_orchestrates_persisted_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document_extraction = MagicMock(status="succeeded")
+    session = MagicMock()
+    session.get = AsyncMock(return_value=document_extraction)
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=False)
+    session_factory = MagicMock(return_value=session_context)
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    embeddings_client = object()
+    embeddings_client_context = MagicMock()
+    embeddings_client_context.__aenter__ = AsyncMock(return_value=embeddings_client)
+    embeddings_client_context.__aexit__ = AsyncMock(return_value=False)
+    embedding_result = EmbeddingPersistenceResult(
+        document_embedding_id=9,
+        page_count=12,
+        created=True,
+    )
+    persist = AsyncMock(return_value=embedding_result)
+
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: MagicMock(openai_embedding_model="text-embedding-3-small"),
+    )
+    monkeypatch.setattr(cli, "create_database_engine", lambda settings: engine)
+    monkeypatch.setattr(
+        cli,
+        "create_session_factory",
+        lambda configured_engine: session_factory,
+    )
+    fake_embeddings_client_cls = MagicMock()
+    fake_embeddings_client_cls.from_settings = MagicMock(
+        return_value=embeddings_client_context
+    )
+    monkeypatch.setattr(cli, "EmbeddingsClient", fake_embeddings_client_cls)
+    monkeypatch.setattr(cli, "embed_document_extraction", persist)
+
+    output = await cli.embed_document_command(42)
+
+    assert output == "Created embedding 9: 12 page(s)."
+    session.get.assert_awaited_once_with(DocumentExtraction, 42)
+    persist.assert_awaited_once()
+    assert persist.await_args is not None
+    persisted_session, persisted_client, persisted_extraction = persist.await_args.args
+    assert persisted_session is session
+    assert persisted_client is embeddings_client
+    assert persisted_extraction is document_extraction
+    assert persist.await_args.kwargs == {
+        "provider": "openai",
+        "model": "text-embedding-3-small",
+        "dimensions": EMBEDDING_DIMENSIONS,
+    }
+    engine.dispose.assert_awaited_once_with()
+
+
 @pytest.mark.parametrize(
     ("error_factory", "expected_exit_code", "expected_message"),
     [
@@ -190,6 +291,16 @@ async def test_extract_document_command_orchestrates_persisted_extraction(
             DocumentIngestionError,
             1,
             "Document ingestion error",
+        ),
+        (
+            cli.DocumentEmbeddingCommandError,
+            1,
+            "Document embedding error",
+        ),
+        (
+            EmbeddingsError,
+            1,
+            "Document embedding error",
         ),
     ],
 )

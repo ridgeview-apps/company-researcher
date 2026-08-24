@@ -42,6 +42,7 @@ and retrieval foundations exist.
 - Docker with Docker Compose (Docker Desktop or OrbStack both work)
 - Tesseract OCR 5 with English language data
 - A Companies House REST API key
+- An OpenAI API key (only needed for `embed-document`)
 
 Install Tesseract on macOS with Homebrew:
 
@@ -77,6 +78,12 @@ Open `.env` and replace this placeholder with your real REST API key:
 
 ```dotenv
 COMPANIES_HOUSE_API_KEY=replace-with-your-api-key
+```
+
+If you intend to run `embed-document`, also replace the OpenAI placeholder:
+
+```dotenv
+OPENAI_API_KEY=replace-with-your-api-key
 ```
 
 `.env` is ignored by Git. `.env.example` documents the required settings but
@@ -258,6 +265,29 @@ The command verifies the stored PDF against its recorded SHA-256 checksum,
 extracts every page with Tesseract, and persists the page text together with
 the exact OCR and renderer configuration. Repeating the command with the same
 document and configuration reuses the successful extraction.
+
+## Embed a filing document
+
+Embed a succeeded document extraction's pages using its PostgreSQL ID:
+
+```bash
+uv run company-researcher embed-document DOCUMENT_EXTRACTION_ID
+```
+
+The command calls the configured OpenAI-compatible embeddings API
+(`OPENAI_EMBEDDING_MODEL`, default `text-embedding-3-small`) once per
+extraction, in a single batched request covering every persisted page, and
+stores one vector per page alongside the exact provider, model, and
+dimensionality used. Repeating the command with the same extraction and
+configuration reuses the successful run rather than re-embedding. This
+command only generates and persists embeddings — retrieval and evaluation
+using them are a separate, not-yet-built step.
+
+Because the stored `vector` column has a fixed width (1536, matching
+`text-embedding-3-small`'s native output), switching to a differently-sized
+model later would need a new migration, not just a different configuration
+value; `dimensions` on `document_embeddings` records what was actually used
+for provenance, but does not itself control the column's width.
 
 ## Measure the lexical-search retrieval baseline
 
@@ -495,14 +525,18 @@ uv run ruff format .
 │   ├── companies_house/                # Replaceable source integration
 │   ├── db/                             # SQLAlchemy engine, sessions, and models
 │   ├── artifact_store.py               # Content-addressed source artifacts
-│   ├── cli.py                          # Inspection, ingestion, extraction, and evaluation CLI
+│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, and evaluation CLI
 │   ├── config.py                       # Environment-backed settings
+│   ├── discriminative_query.py         # Corpus document-frequency query ranking
 │   ├── document_ingestion.py           # Filing-document acquisition and persistence
+│   ├── embedding_persistence.py        # Idempotent page-embedding persistence
+│   ├── embeddings_client.py            # Async client for the embeddings provider
 │   ├── extraction_persistence.py       # Idempotent page-extraction persistence
 │   ├── ingestion.py                    # Idempotent persistence of source data
 │   ├── lexical_search.py               # PostgreSQL full-text page search
 │   ├── main.py                         # FastAPI application factory
 │   ├── pdf_extraction.py               # Page-aware local PDF OCR
+│   ├── query_construction.py           # Deterministic stopword-removal query derivation
 │   └── retrieval_evaluation.py         # Recall@K / MRR scoring against labelled data
 ├── tests/                              # Focused unit and API tests
 ├── .env.example                        # Safe configuration template

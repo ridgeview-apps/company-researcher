@@ -52,16 +52,32 @@ semantic (embedding-based) retrieval next than the original schedule's
 assumption — though not evidence that it would outperform lexical search
 outright.
 
-Work incrementally. The next milestone has not yet been agreed. Challenge and
-refine any proposed next milestone against the actual codebase and persisted
-data before implementing it, the same way the retrieval evaluation milestone
-was refined before any schema or code was added.
+The next milestone — embeddings and vector-only retrieval, measured as its
+own baseline before hybrid retrieval — has now been deliberately agreed and
+started incrementally. So far this covers embedding *generation and
+persistence* only: an async `EmbeddingsClient` (`embeddings_client.py`,
+mirroring `companies_house/`'s client conventions, mocked via
+`httpx2.MockTransport` in tests, never a real network call in the test
+suite), `document_embeddings`/`page_embeddings` tables (mirroring
+`document_extractions`/`document_pages`'s config-as-uniqueness-key,
+idempotent-rerun pattern), and an `embed-document` CLI command. The
+`page_embeddings.embedding` column has a fixed width (1536, matching
+`text-embedding-3-small`); `document_embeddings.dimensions` records what was
+used for provenance but does not itself control that width, so a
+differently-sized model would need a new migration. Vector search and
+retrieval evaluation using these embeddings do not exist yet — that is the
+next step within this milestone, not a separate one to defer indefinitely.
 
-Do not add LLM generation, LangGraph, HITL, LLM judges, embeddings, vector or
-hybrid retrieval, reranking, advanced RAG, or hard-coded historical as-of
-behavior until the relevant project phase and until deliberately agreed as the
-next milestone. Keep evaluation work limited to the small dataset and
-deterministic retrieval metrics needed for the baseline.
+Work incrementally. Challenge and refine each step of an agreed milestone
+against the actual codebase and persisted data before implementing it, the
+same way the retrieval evaluation milestone was refined before any schema or
+code was added.
+
+Do not add LLM generation, LangGraph, HITL, LLM judges, hybrid retrieval,
+reranking, advanced RAG, or hard-coded historical as-of behavior until the
+relevant project phase and until deliberately agreed as the next milestone.
+Keep evaluation work limited to the small dataset and deterministic
+retrieval metrics needed for the baseline.
 
 ## Engineering conventions
 

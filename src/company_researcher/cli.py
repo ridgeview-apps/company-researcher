@@ -22,12 +22,19 @@ from company_researcher.companies_house.exceptions import (
     CompaniesHouseResponseError,
 )
 from company_researcher.config import Settings
-from company_researcher.db.models import Filing, FilingDocument
+from company_researcher.db.models import (
+    EMBEDDING_DIMENSIONS,
+    DocumentExtraction,
+    Filing,
+    FilingDocument,
+)
 from company_researcher.db.session import create_database_engine, create_session_factory
 from company_researcher.document_ingestion import (
     DocumentIngestionError,
     ingest_filing_document,
 )
+from company_researcher.embedding_persistence import embed_document_extraction
+from company_researcher.embeddings_client import EmbeddingsClient, EmbeddingsError
 from company_researcher.extraction_persistence import extract_filing_document
 from company_researcher.ingestion import ingest_company
 from company_researcher.pdf_extraction import PdfExtractionError, TesseractPdfExtractor
@@ -44,6 +51,10 @@ DEFAULT_EVALUATION_DATASET = "evaluation/gymshark_retrieval_questions.json"
 
 class DocumentExtractionCommandError(Exception):
     """Raised when a requested filing document cannot be extracted."""
+
+
+class DocumentEmbeddingCommandError(Exception):
+    """Raised when a requested document extraction cannot be embedded."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,6 +104,16 @@ def build_parser() -> argparse.ArgumentParser:
         "filing_document_id",
         type=int,
         help="Database ID of a previously downloaded filing document.",
+    )
+
+    embedding_parser = subparsers.add_parser(
+        "embed-document",
+        help="Embed and persist the pages of one succeeded document extraction.",
+    )
+    embedding_parser.add_argument(
+        "document_extraction_id",
+        type=int,
+        help="Database ID of a previously succeeded document extraction.",
     )
 
     evaluation_parser = subparsers.add_parser(
@@ -242,6 +263,48 @@ def run_document_extraction(filing_document_id: int) -> str:
     return asyncio.run(extract_document_command(filing_document_id))
 
 
+async def embed_document_command(document_extraction_id: int) -> str:
+    """Embed and persist the pages of one succeeded document extraction."""
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            document_extraction = await session.get(
+                DocumentExtraction, document_extraction_id
+            )
+            if document_extraction is None:
+                raise DocumentEmbeddingCommandError(
+                    f"Document extraction {document_extraction_id} is not "
+                    "persisted; extract it first"
+                )
+            if document_extraction.status != "succeeded":
+                raise DocumentEmbeddingCommandError(
+                    f"Document extraction {document_extraction_id} has not "
+                    f"succeeded (status={document_extraction.status})"
+                )
+
+            async with EmbeddingsClient.from_settings(settings) as embeddings_client:
+                result = await embed_document_extraction(
+                    session,
+                    embeddings_client,
+                    document_extraction,
+                    provider="openai",
+                    model=settings.openai_embedding_model,
+                    dimensions=EMBEDDING_DIMENSIONS,
+                )
+    finally:
+        await engine.dispose()
+
+    action = "Created" if result.created else "Reused"
+    return f"{action} embedding {result.document_embedding_id}: {result.page_count} page(s)."
+
+
+def run_document_embedding(document_extraction_id: int) -> str:
+    """Run one document-extraction embedding from the synchronous CLI."""
+    return asyncio.run(embed_document_command(document_extraction_id))
+
+
 async def evaluate_retrieval_command(dataset_path: str, query_source: str) -> str:
     """Measure lexical-search Recall@K and MRR against a labelled question set."""
     dataset = load_evaluation_dataset(Path(dataset_path))
@@ -288,6 +351,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = run_retrieval_evaluation(args.dataset_path, args.query_source)
         elif args.command == "extract-document":
             output = run_document_extraction(args.filing_document_id)
+        elif args.command == "embed-document":
+            output = run_document_embedding(args.document_extraction_id)
         elif args.command == "ingest-document":
             output = run_document_ingestion(args.company_number, args.transaction_id)
         elif args.command == "ingest":
@@ -318,6 +383,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         PdfExtractionError,
     ) as error:
         print(f"Document extraction error: {error}", file=sys.stderr)
+        return 1
+    except (DocumentEmbeddingCommandError, EmbeddingsError) as error:
+        print(f"Document embedding error: {error}", file=sys.stderr)
         return 1
     except RetrievalEvaluationError as error:
         print(f"Retrieval evaluation error: {error}", file=sys.stderr)

@@ -2,6 +2,7 @@ from datetime import date as PyDate
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -19,6 +20,8 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from company_researcher.db.base import Base
+
+EMBEDDING_DIMENSIONS = 1536
 
 
 class Company(Base):
@@ -234,6 +237,87 @@ class DocumentPage(Base):
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     character_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DocumentEmbedding(Base):
+    """One reproducible embedding run over a document extraction's pages."""
+
+    __tablename__ = "document_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_extraction_id",
+            "provider",
+            "model",
+            "dimensions",
+            name="uq_document_embeddings_extraction_configuration",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed')",
+            name="ck_document_embeddings_status",
+        ),
+        CheckConstraint(
+            "page_count IS NULL OR page_count >= 0",
+            name="ck_document_embeddings_page_count_non_negative",
+        ),
+        CheckConstraint(
+            "dimensions > 0",
+            name="ck_document_embeddings_dimensions_positive",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    document_extraction_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("document_extractions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="running")
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class PageEmbedding(Base):
+    """One page's embedding vector for a specific document embedding run."""
+
+    __tablename__ = "page_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_embedding_id",
+            "document_page_id",
+            name="uq_page_embeddings_embedding_page",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    document_embedding_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("document_embeddings.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    document_page_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("document_pages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    embedding: Mapped[list[float]] = mapped_column(
+        Vector(EMBEDDING_DIMENSIONS), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
