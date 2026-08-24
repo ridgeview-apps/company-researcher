@@ -52,21 +52,34 @@ semantic (embedding-based) retrieval next than the original schedule's
 assumption — though not evidence that it would outperform lexical search
 outright.
 
-The next milestone — embeddings and vector-only retrieval, measured as its
-own baseline before hybrid retrieval — has now been deliberately agreed and
-started incrementally. So far this covers embedding *generation and
-persistence* only: an async `EmbeddingsClient` (`embeddings_client.py`,
-mirroring `companies_house/`'s client conventions, mocked via
-`httpx2.MockTransport` in tests, never a real network call in the test
-suite), `document_embeddings`/`page_embeddings` tables (mirroring
-`document_extractions`/`document_pages`'s config-as-uniqueness-key,
-idempotent-rerun pattern), and an `embed-document` CLI command. The
-`page_embeddings.embedding` column has a fixed width (1536, matching
-`text-embedding-3-small`); `document_embeddings.dimensions` records what was
-used for provenance but does not itself control that width, so a
-differently-sized model would need a new migration. Vector search and
-retrieval evaluation using these embeddings do not exist yet — that is the
-next step within this milestone, not a separate one to defer indefinitely.
+The embeddings and vector-only retrieval milestone is now complete and
+measured. Embedding generation/persistence (`embeddings_client.py`,
+`embedding_persistence.py`, `document_embeddings`/`page_embeddings` tables,
+`embed-document` CLI) mirrors the OCR extraction phase's conventions
+throughout; see earlier history for that detail. `vector_search.py` ranks
+persisted page embeddings by cosine distance (pgvector `<=>`, via
+`PageEmbedding.embedding.cosine_distance()`), and `evaluate-retrieval
+--retrieval-method vector` embeds each question's full text (not a keyword
+query — embeddings are not diluted by extra context the way `ts_rank` is)
+and scores it the same way as the lexical strategies.
+
+Measured against the same 6 Gymshark questions, using the real persisted
+corpus: Mean Recall@5 = 0.0, Recall@10 = 0.083, MRR = 0.044 — worse than
+every lexical strategy, including the full-sentence baseline. Diagnosed
+cause (see `README.md` for the worked examples): dense embeddings capture
+*topic* well but are comparatively weak at distinguishing *which year's*
+instance of a heavily templated, regulation-driven annual disclosure they
+are looking at — e.g. the FY2025 turnover page ranked outside the top 50
+entirely, beaten by an FY2023 KPI table that also mentions "turnover"; the
+FY2023 going-concern note lost to the FY2021 going-concern note's
+near-identical boilerplate. This is the mirror image of the lexical corpus's
+weakness: lexical's literal year-token match trivially disambiguates fiscal
+years (why hand-tuned querying scored so well) but struggles with
+vocabulary/paraphrase gaps; vector search handles paraphrase well but
+struggles with fine-grained temporal disambiguation between near-duplicate
+template text. Neither dominates the other on this corpus. That is now a
+concrete, evidenced case for hybrid retrieval as the next milestone — not
+an assumed one.
 
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the

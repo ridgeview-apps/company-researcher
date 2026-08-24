@@ -159,7 +159,7 @@ async def test_embed_document_extraction_persists_vectors_in_page_order(
         )
     )
 
-    assert result.created is True
+    assert result.outcome == "created"
     assert result.page_count == 2
     assert document_embedding is not None
     assert document_embedding.status == "succeeded"
@@ -198,8 +198,8 @@ async def test_embed_document_extraction_skips_succeeded_configuration(
         .where(PageEmbedding.document_embedding_id == first.document_embedding_id)
     )
 
-    assert first.created is True
-    assert second.created is False
+    assert first.outcome == "created"
+    assert second.outcome == "reused"
     assert provider.call_count == 1
     assert embedding_count == 2
 
@@ -229,3 +229,33 @@ async def test_embed_document_extraction_records_controlled_failure(
     assert document_embedding.status == "failed"
     assert document_embedding.error_message == "Controlled embeddings failure"
     assert document_embedding.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_embed_document_extraction_reports_retried_after_a_failed_run(
+    session: AsyncSession,
+) -> None:
+    """A successful retry of a previously-failed run is real new work, distinct
+    from 'reused' (which does no work) and 'created' (no prior row existed)."""
+    extraction = await _create_extraction(session, ["First page"])
+    with pytest.raises(EmbeddingsError):
+        await embed_document_extraction(
+            session,
+            FakeEmbeddingsProvider(fail=True),
+            extraction,
+            provider="fake",
+            model="fake-model",
+            dimensions=EMBEDDING_DIMENSIONS,
+        )
+
+    result = await embed_document_extraction(
+        session,
+        FakeEmbeddingsProvider(),
+        extraction,
+        provider="fake",
+        model="fake-model",
+        dimensions=EMBEDDING_DIMENSIONS,
+    )
+
+    assert result.outcome == "retried"
+    assert result.page_count == 1

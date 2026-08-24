@@ -146,7 +146,7 @@ async def test_extract_filing_document_persists_pages_and_provenance(
         )
     )
 
-    assert result.created is True
+    assert result.outcome == "created"
     assert result.page_count == 2
     assert result.total_character_count == 21
     assert extraction is not None
@@ -171,8 +171,8 @@ async def test_extract_filing_document_skips_succeeded_configuration(
         .where(DocumentPage.document_extraction_id == first.document_extraction_id)
     )
 
-    assert first.created is True
-    assert second.created is False
+    assert first.outcome == "created"
+    assert second.outcome == "reused"
     assert extractor.call_count == 1
     assert page_count == 2
 
@@ -199,6 +199,27 @@ async def test_extract_filing_document_records_controlled_failure(
     assert extraction.status == "failed"
     assert extraction.error_message == "Controlled OCR failure"
     assert extraction.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_extract_filing_document_reports_retried_after_a_failed_run(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    """A successful retry of a previously-failed run is real new work, distinct
+    from 'reused' (which does no work) and 'created' (no prior row existed)."""
+    store = LocalArtifactStore(tmp_path)
+    document = await _create_document(session, store)
+
+    with pytest.raises(PdfExtractionError):
+        await extract_filing_document(
+            session, store, FakeExtractor(fail=True), document
+        )
+
+    result = await extract_filing_document(session, store, FakeExtractor(), document)
+
+    assert result.outcome == "retried"
+    assert result.page_count == 2
 
 
 @pytest.mark.asyncio

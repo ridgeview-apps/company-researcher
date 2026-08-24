@@ -42,6 +42,7 @@ from company_researcher.retrieval_evaluation import (
     RetrievalEvaluationError,
     load_evaluation_dataset,
     run_evaluation,
+    run_vector_evaluation,
     with_derived_queries,
     with_discriminative_queries,
 )
@@ -118,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     evaluation_parser = subparsers.add_parser(
         "evaluate-retrieval",
-        help="Measure lexical-search Recall@K and MRR against a labelled question set.",
+        help="Measure retrieval Recall@K and MRR against a labelled question set.",
     )
     evaluation_parser.add_argument(
         "dataset_path",
@@ -127,17 +128,32 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Path to an evaluation dataset (default: {DEFAULT_EVALUATION_DATASET}).",
     )
     evaluation_parser.add_argument(
+        "--retrieval-method",
+        choices=["lexical", "vector"],
+        default="lexical",
+        help=(
+            "'lexical' (default) uses PostgreSQL full-text search; "
+            "--query-source selects how its query text is built. 'vector' "
+            "instead embeds each question's full text with the configured "
+            "embeddings provider and ranks pages by cosine distance against "
+            "previously persisted page embeddings (run embed-document "
+            "first); --query-source is ignored and a real embeddings API "
+            "call is made per question."
+        ),
+    )
+    evaluation_parser.add_argument(
         "--query-source",
         choices=["dataset", "derived", "derived-idf"],
         default="dataset",
         help=(
-            "'dataset' uses each question's hand-picked 'query' field "
-            "(default). 'derived' ignores it and derives a query from "
-            "'text' with derive_query(), a deterministic stopword-removal "
-            "rule. 'derived-idf' further ranks derive_query()'s content "
-            "words by document frequency across all persisted document "
-            "pages and keeps only the rarest few. None of these can have "
-            "been tuned to the known-relevant pages."
+            "Only used when --retrieval-method is 'lexical'. 'dataset' uses "
+            "each question's hand-picked 'query' field (default). 'derived' "
+            "ignores it and derives a query from 'text' with derive_query(), "
+            "a deterministic stopword-removal rule. 'derived-idf' further "
+            "ranks derive_query()'s content words by document frequency "
+            "across all persisted document pages and keeps only the rarest "
+            "few. None of these can have been tuned to the known-relevant "
+            "pages."
         ),
     )
     return parser
@@ -250,7 +266,9 @@ async def extract_document_command(filing_document_id: int) -> str:
     finally:
         await engine.dispose()
 
-    action = "Created" if result.created else "Reused"
+    action = {"created": "Created", "retried": "Retried", "reused": "Reused"}[
+        result.outcome
+    ]
     return (
         f"{action} extraction {result.document_extraction_id}: "
         f"{result.page_count} page(s), "
@@ -296,7 +314,9 @@ async def embed_document_command(document_extraction_id: int) -> str:
     finally:
         await engine.dispose()
 
-    action = "Created" if result.created else "Reused"
+    action = {"created": "Created", "retried": "Retried", "reused": "Reused"}[
+        result.outcome
+    ]
     return f"{action} embedding {result.document_embedding_id}: {result.page_count} page(s)."
 
 
@@ -305,19 +325,34 @@ def run_document_embedding(document_extraction_id: int) -> str:
     return asyncio.run(embed_document_command(document_extraction_id))
 
 
-async def evaluate_retrieval_command(dataset_path: str, query_source: str) -> str:
-    """Measure lexical-search Recall@K and MRR against a labelled question set."""
+async def evaluate_retrieval_command(
+    dataset_path: str, query_source: str, retrieval_method: str
+) -> str:
+    """Measure retrieval Recall@K and MRR against a labelled question set."""
     dataset = load_evaluation_dataset(Path(dataset_path))
-    if query_source == "derived":
-        dataset = with_derived_queries(dataset)
     settings = Settings()
     engine = create_database_engine(settings)
     try:
         session_factory = create_session_factory(engine)
         async with session_factory() as session:
-            if query_source == "derived-idf":
-                dataset = await with_discriminative_queries(session, dataset)
-            summary = await run_evaluation(session, dataset)
+            if retrieval_method == "vector":
+                async with EmbeddingsClient.from_settings(
+                    settings
+                ) as embeddings_client:
+                    summary = await run_vector_evaluation(
+                        session,
+                        embeddings_client,
+                        dataset,
+                        provider="openai",
+                        model=settings.openai_embedding_model,
+                        dimensions=EMBEDDING_DIMENSIONS,
+                    )
+            else:
+                if query_source == "derived":
+                    dataset = with_derived_queries(dataset)
+                elif query_source == "derived-idf":
+                    dataset = await with_discriminative_queries(session, dataset)
+                summary = await run_evaluation(session, dataset)
     finally:
         await engine.dispose()
 
@@ -337,9 +372,13 @@ async def evaluate_retrieval_command(dataset_path: str, query_source: str) -> st
     return "\n".join(lines)
 
 
-def run_retrieval_evaluation(dataset_path: str, query_source: str) -> str:
+def run_retrieval_evaluation(
+    dataset_path: str, query_source: str, retrieval_method: str
+) -> str:
     """Run one retrieval evaluation from the synchronous CLI."""
-    return asyncio.run(evaluate_retrieval_command(dataset_path, query_source))
+    return asyncio.run(
+        evaluate_retrieval_command(dataset_path, query_source, retrieval_method)
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -348,7 +387,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "evaluate-retrieval":
-            output = run_retrieval_evaluation(args.dataset_path, args.query_source)
+            output = run_retrieval_evaluation(
+                args.dataset_path, args.query_source, args.retrieval_method
+            )
         elif args.command == "extract-document":
             output = run_document_extraction(args.filing_document_id)
         elif args.command == "embed-document":

@@ -7,8 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.db.models import DocumentExtraction, Filing, FilingDocument
 from company_researcher.discriminative_query import derive_discriminative_query
+from company_researcher.embeddings_client import EmbeddingsProvider
 from company_researcher.lexical_search import search_pages
 from company_researcher.query_construction import derive_query
+from company_researcher.vector_search import search_pages_by_embedding
 
 DEFAULT_K_VALUES: tuple[int, ...] = (5, 10)
 DEFAULT_SEARCH_DEPTH = 50
@@ -165,6 +167,48 @@ async def _resolve_relevant_extraction_pages(
     }
 
 
+def _score_retrieved_pages(
+    question_id: str,
+    retrieved: list[tuple[int, int]],
+    relevant: set[tuple[int, int]],
+    k_values: tuple[int, ...],
+) -> QuestionMetrics:
+    """Score a ranked list of retrieved pages against known-relevant pages."""
+    recall_at_k = {
+        k: len(relevant & set(retrieved[:k])) / len(relevant) for k in k_values
+    }
+    reciprocal_rank = 0.0
+    for position, page in enumerate(retrieved, start=1):
+        if page in relevant:
+            reciprocal_rank = 1 / position
+            break
+
+    return QuestionMetrics(
+        question_id=question_id,
+        recall_at_k=recall_at_k,
+        reciprocal_rank=reciprocal_rank,
+    )
+
+
+def _summarize(
+    per_question: tuple[QuestionMetrics, ...], k_values: tuple[int, ...]
+) -> EvaluationSummary:
+    """Average per-question metrics into corpus-wide Recall@K and MRR."""
+    question_count = len(per_question)
+    mean_recall_at_k = {
+        k: sum(metrics.recall_at_k[k] for metrics in per_question) / question_count
+        for k in k_values
+    }
+    mean_reciprocal_rank = (
+        sum(metrics.reciprocal_rank for metrics in per_question) / question_count
+    )
+    return EvaluationSummary(
+        per_question=per_question,
+        mean_recall_at_k=mean_recall_at_k,
+        mean_reciprocal_rank=mean_reciprocal_rank,
+    )
+
+
 async def evaluate_question(
     session: AsyncSession,
     question: EvaluationQuestion,
@@ -179,21 +223,7 @@ async def evaluate_question(
     )
     matches = await search_pages(session, question.query, limit=search_depth)
     retrieved = [(match.document_extraction_id, match.page_number) for match in matches]
-
-    recall_at_k = {
-        k: len(relevant & set(retrieved[:k])) / len(relevant) for k in k_values
-    }
-    reciprocal_rank = 0.0
-    for position, page in enumerate(retrieved, start=1):
-        if page in relevant:
-            reciprocal_rank = 1 / position
-            break
-
-    return QuestionMetrics(
-        question_id=question.id,
-        recall_at_k=recall_at_k,
-        reciprocal_rank=reciprocal_rank,
-    )
+    return _score_retrieved_pages(question.id, retrieved, relevant, k_values)
 
 
 async def run_evaluation(
@@ -216,16 +246,69 @@ async def run_evaluation(
             for question in dataset.questions
         ]
     )
-    question_count = len(per_question)
-    mean_recall_at_k = {
-        k: sum(metrics.recall_at_k[k] for metrics in per_question) / question_count
-        for k in k_values
-    }
-    mean_reciprocal_rank = (
-        sum(metrics.reciprocal_rank for metrics in per_question) / question_count
+    return _summarize(per_question, k_values)
+
+
+async def evaluate_question_by_embedding(
+    session: AsyncSession,
+    embeddings_client: EmbeddingsProvider,
+    question: EvaluationQuestion,
+    company_number: str,
+    *,
+    provider: str,
+    model: str,
+    dimensions: int,
+    k_values: tuple[int, ...] = DEFAULT_K_VALUES,
+    search_depth: int = DEFAULT_SEARCH_DEPTH,
+) -> QuestionMetrics:
+    """Score one question's vector search results against its relevance labels.
+
+    Embeds the question's full natural-language `text`, not a short keyword
+    query: unlike PostgreSQL's OR-combined lexical ranking, embeddings are
+    not diluted by extra context, so there is no reason to shorten it here.
+    """
+    relevant = await _resolve_relevant_extraction_pages(
+        session, company_number, question.relevant_pages
     )
-    return EvaluationSummary(
-        per_question=per_question,
-        mean_recall_at_k=mean_recall_at_k,
-        mean_reciprocal_rank=mean_reciprocal_rank,
+    (query_embedding,) = await embeddings_client.embed([question.text])
+    matches = await search_pages_by_embedding(
+        session,
+        query_embedding,
+        provider=provider,
+        model=model,
+        dimensions=dimensions,
+        limit=search_depth,
     )
+    retrieved = [(match.document_extraction_id, match.page_number) for match in matches]
+    return _score_retrieved_pages(question.id, retrieved, relevant, k_values)
+
+
+async def run_vector_evaluation(
+    session: AsyncSession,
+    embeddings_client: EmbeddingsProvider,
+    dataset: EvaluationDataset,
+    *,
+    provider: str,
+    model: str,
+    dimensions: int,
+    k_values: tuple[int, ...] = DEFAULT_K_VALUES,
+    search_depth: int = DEFAULT_SEARCH_DEPTH,
+) -> EvaluationSummary:
+    """Evaluate every question in a dataset using vector search."""
+    per_question = tuple(
+        [
+            await evaluate_question_by_embedding(
+                session,
+                embeddings_client,
+                question,
+                dataset.company_number,
+                provider=provider,
+                model=model,
+                dimensions=dimensions,
+                k_values=k_values,
+                search_depth=search_depth,
+            )
+            for question in dataset.questions
+        ]
+    )
+    return _summarize(per_question, k_values)

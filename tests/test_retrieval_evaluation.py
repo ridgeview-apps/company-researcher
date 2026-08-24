@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.config import Settings
 from company_researcher.db.models import (
+    EMBEDDING_DIMENSIONS,
     Company,
     DocumentExtraction,
     DocumentPage,
@@ -16,14 +17,37 @@ from company_researcher.db.models import (
     FilingDocument,
 )
 from company_researcher.db.session import create_database_engine, create_session_factory
+from company_researcher.embedding_persistence import embed_document_extraction
 from company_researcher.retrieval_evaluation import (
     EvaluationQuestion,
     RelevantPage,
     RetrievalEvaluationError,
     evaluate_question,
+    evaluate_question_by_embedding,
     load_evaluation_dataset,
     run_evaluation,
 )
+
+FAKE_EMBEDDING_PROVIDER = "fake"
+FAKE_EMBEDDING_MODEL = "fake-model"
+
+
+def _axis_vector(index: int, value: float = 1.0) -> list[float]:
+    """A vector with `value` at `index` and zero elsewhere, for clean cosine geometry."""
+    vector = [0.0] * EMBEDDING_DIMENSIONS
+    vector[index] = value
+    return vector
+
+
+class FakeEmbeddingsProvider:
+    """Embeds each text by exact lookup, for deterministic vector-search tests."""
+
+    def __init__(self, vectors_by_text: dict[str, list[float]]) -> None:
+        self._vectors_by_text = vectors_by_text
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return [self._vectors_by_text[text] for text in texts]
+
 
 TEST_COMPANY_NUMBER = "TE000007"
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -52,7 +76,7 @@ async def session() -> AsyncIterator[AsyncSession]:
 
 async def _create_filing_with_pages(
     session: AsyncSession, transaction_id: str, texts: list[str]
-) -> None:
+) -> DocumentExtraction:
     now = datetime.now(UTC)
     filing = Filing(
         company_number=TEST_COMPANY_NUMBER,
@@ -106,6 +130,7 @@ async def _create_filing_with_pages(
         ]
     )
     await session.commit()
+    return extraction
 
 
 @pytest_asyncio.fixture
@@ -188,6 +213,111 @@ async def test_evaluate_question_raises_for_unresolvable_transaction_id(
 
     with pytest.raises(RetrievalEvaluationError):
         await evaluate_question(session, question, TEST_COMPANY_NUMBER)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_question_by_embedding_scores_a_retrieved_relevant_page(
+    session: AsyncSession, company: Company
+) -> None:
+    first_page_text = "Alpha bravo charlie appears on this page."
+    second_page_text = "Delta echo foxtrot."
+    question_text = "Where does alpha bravo appear?"
+    extraction = await _create_filing_with_pages(
+        session, "eval-vector-transaction-alpha", [first_page_text, second_page_text]
+    )
+    provider = FakeEmbeddingsProvider(
+        {
+            first_page_text: _axis_vector(0),
+            second_page_text: _axis_vector(1),
+            question_text: _axis_vector(0),
+        }
+    )
+    await embed_document_extraction(
+        session,
+        provider,
+        extraction,
+        provider=FAKE_EMBEDDING_PROVIDER,
+        model=FAKE_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+    )
+    question = EvaluationQuestion(
+        id="q-alpha-vector",
+        text=question_text,
+        query="unused",
+        relevant_pages=(
+            RelevantPage(transaction_id="eval-vector-transaction-alpha", page_number=1),
+        ),
+    )
+
+    metrics = await evaluate_question_by_embedding(
+        session,
+        provider,
+        question,
+        TEST_COMPANY_NUMBER,
+        provider=FAKE_EMBEDDING_PROVIDER,
+        model=FAKE_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+        k_values=(1, 3),
+        search_depth=10,
+    )
+
+    assert metrics.recall_at_k == {1: 1.0, 3: 1.0}
+    assert metrics.reciprocal_rank == 1.0
+
+
+@pytest.mark.asyncio
+async def test_evaluate_question_by_embedding_scores_zero_beyond_search_depth(
+    session: AsyncSession, company: Company
+) -> None:
+    """Unlike lexical search's match/no-match threshold, vector search always
+    returns *something* up to `search_depth` — a relevant page only scores
+    zero if it ranks beyond that limit, not because nothing "matched"."""
+    relevant_page_text = "Golf hotel india on this page."
+    closer_page_text = "Unrelated content that happens to rank closer."
+    question_text = "Where does golf hotel india appear?"
+    extraction = await _create_filing_with_pages(
+        session,
+        "eval-vector-transaction-beta",
+        [relevant_page_text, closer_page_text],
+    )
+    provider = FakeEmbeddingsProvider(
+        {
+            relevant_page_text: _axis_vector(1),  # far from the question vector
+            closer_page_text: _axis_vector(0),  # identical to the question vector
+            question_text: _axis_vector(0),
+        }
+    )
+    await embed_document_extraction(
+        session,
+        provider,
+        extraction,
+        provider=FAKE_EMBEDDING_PROVIDER,
+        model=FAKE_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+    )
+    question = EvaluationQuestion(
+        id="q-beta-vector",
+        text=question_text,
+        query="unused",
+        relevant_pages=(
+            RelevantPage(transaction_id="eval-vector-transaction-beta", page_number=1),
+        ),
+    )
+
+    metrics = await evaluate_question_by_embedding(
+        session,
+        provider,
+        question,
+        TEST_COMPANY_NUMBER,
+        provider=FAKE_EMBEDDING_PROVIDER,
+        model=FAKE_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+        k_values=(1,),
+        search_depth=1,
+    )
+
+    assert metrics.recall_at_k == {1: 0.0}
+    assert metrics.reciprocal_rank == 0.0
 
 
 def test_load_evaluation_dataset_parses_gymshark_fixture() -> None:

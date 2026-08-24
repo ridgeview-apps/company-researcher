@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,14 +13,23 @@ from company_researcher.db.models import (
 )
 from company_researcher.embeddings_client import EmbeddingsError, EmbeddingsProvider
 
+EmbeddingOutcome = Literal["created", "retried", "reused"]
+
 
 @dataclass(frozen=True)
 class EmbeddingPersistenceResult:
-    """Summary of one persisted document embedding run."""
+    """Summary of one persisted document embedding run.
+
+    `outcome` distinguishes three cases that a single "was it created"
+    boolean conflates: 'created' (no tracking row existed before this call),
+    'retried' (a row existed but its previous run had not succeeded, e.g. it
+    failed — real embedding work happened just now), and 'reused' (a row
+    already existed with a succeeded run — no new work happened).
+    """
 
     document_embedding_id: int
     page_count: int
-    created: bool
+    outcome: EmbeddingOutcome
 
 
 async def embed_document_extraction(
@@ -45,7 +55,7 @@ async def embed_document_extraction(
         return EmbeddingPersistenceResult(
             document_embedding_id=document_embedding.id,
             page_count=document_embedding.page_count or 0,
-            created=False,
+            outcome="reused",
         )
 
     pages = list(
@@ -58,7 +68,7 @@ async def embed_document_extraction(
         ).all()
     )
 
-    created = document_embedding is None
+    outcome: EmbeddingOutcome = "created" if document_embedding is None else "retried"
     started_at = datetime.now(UTC)
     if document_embedding is None:
         document_embedding = DocumentEmbedding(
@@ -110,5 +120,5 @@ async def embed_document_extraction(
     return EmbeddingPersistenceResult(
         document_embedding_id=document_embedding.id,
         page_count=document_embedding.page_count,
-        created=created,
+        outcome=outcome,
     )

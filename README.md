@@ -263,8 +263,11 @@ uv run company-researcher extract-document FILING_DOCUMENT_ID
 
 The command verifies the stored PDF against its recorded SHA-256 checksum,
 extracts every page with Tesseract, and persists the page text together with
-the exact OCR and renderer configuration. Repeating the command with the same
-document and configuration reuses the successful extraction.
+the exact OCR and renderer configuration. Repeating the command reports one
+of three outcomes: "Created" (no tracking row existed yet), "Retried" (a row
+existed but its previous run had failed — real OCR work happens on this
+call), or "Reused" (a row already completed successfully — no new work
+happens, the true no-op case).
 
 ## Embed a filing document
 
@@ -278,10 +281,13 @@ The command calls the configured OpenAI-compatible embeddings API
 (`OPENAI_EMBEDDING_MODEL`, default `text-embedding-3-small`) once per
 extraction, in a single batched request covering every persisted page, and
 stores one vector per page alongside the exact provider, model, and
-dimensionality used. Repeating the command with the same extraction and
-configuration reuses the successful run rather than re-embedding. This
-command only generates and persists embeddings — retrieval and evaluation
-using them are a separate, not-yet-built step.
+dimensionality used. Repeating the command reports one of three outcomes:
+"Created" (no tracking row existed yet), "Retried" (a row existed but its
+previous run had failed, e.g. an exhausted API quota — real embedding work
+happens on this call), or "Reused" (a row already completed successfully —
+no new work happens, the true no-op case). See
+[Measure the vector-only retrieval baseline](#measure-the-vector-only-retrieval-baseline)
+for how these embeddings are actually searched and evaluated.
 
 Because the stored `vector` column has a fixed width (1536, matching
 `text-embedding-3-small`'s native output), switching to a differently-sized
@@ -468,6 +474,87 @@ evidence that hybrid retrieval would beat lexical search outright, only that
 lexical search's remaining deterministic query-construction options have
 been reasonably explored on this corpus first, rather than skipped.
 
+## Measure the vector-only retrieval baseline
+
+Each Gymshark document extraction's pages were embedded with
+`text-embedding-3-small` via `embed-document` (see
+[Embed a filing document](#embed-a-filing-document)), then scored against the
+same 6-question set with:
+
+```bash
+uv run company-researcher evaluate-retrieval --retrieval-method vector
+```
+
+This embeds each question's full natural-language `text` (not a short
+keyword query — unlike lexical `ts_rank`, embeddings are not diluted by
+extra context, so there is no reason to shorten it) and ranks pages by
+cosine distance against the persisted page embeddings.
+
+### Measured result
+
+| Question | Recall@5 | Recall@10 | Reciprocal rank |
+| --- | --- | --- | --- |
+| q1-fy2025-turnover | 0.00 | 0.00 | 0.00 |
+| q2-turnover-trend-fy2021-fy2025 | 0.00 | 0.00 | 0.03 |
+| q3-fy2022-amendment-comparison | 0.00 | 0.00 | 0.07 |
+| q4-directors-fy2021-fy2025 | 0.00 | 0.00 | 0.02 |
+| q5-dividends-fy2022-vs-fy2025 | 0.00 | 0.00 | 0.00 |
+| q6-going-concern-fy2023 | 0.00 | 0.50 | 0.14 |
+| **Mean** | **0.000** | **0.083** | **0.044** |
+
+This is worse than every lexical strategy measured above, including the
+weakest one (matching the full sentence). As predicted, vector search is not
+vulnerable to the two lexical failure modes diagnosed above — but inspecting
+individual results shows it has a different, more serious failure mode on
+this specific corpus: **it confuses near-identical disclosures across
+different fiscal years.**
+
+For Q1 ("turnover for the year ended 31 July 2025"), the actually-relevant
+page — Gymshark's FY2025 profit and loss account, containing `Turnover 3
+490,142 458,624` — ranked outside the top 50 entirely, at cosine distance
+0.443. Ranked *first* instead, at distance 0.255, was a FY2023 strategic
+report's KPI table headed "FOR THE YEAR ENDED 31 JULY 2023" that also
+happens to state a `Turnover` figure. The KPI table's embedding is closer to
+the question than the actual FY2025 P&L page's embedding, because the KPI
+table is short and almost entirely about the concept "turnover," while the
+full P&L page dilutes that signal across a dozen other line items (cost of
+sales, distribution costs, administrative expenses, interest, ...) — and
+critically, the embedding barely distinguishes *which year's* turnover table
+it is looking at.
+
+The same pattern explains Q6, the only question that scored above zero: its
+two relevant pages are the FY2023 accounts' going-concern note, but the
+page ranked closest to the question is the *FY2021* accounts' going-concern
+note — nearly word-for-word identical boilerplate ("The directors are
+required to assess the Company's ability to continue as a going concern for
+a period of at least 12 months from the date of signing...") that UK
+statutory accounts reuse verbatim, year after year, by regulatory
+convention. The FY2023 page does rank in the top 10 (position 7), which is
+why Q6 gets partial credit — but a near-duplicate from the wrong year still
+ranks above it.
+
+This is the reverse of the lexical corpus's problem. Lexical search's
+literal `2025`/`2023` token match trivially disambiguates fiscal years —
+that specific mechanism is exactly why the hand-tuned query `Gymshark
+turnover 2025` scored Recall@5 = 1.00 on Q1. Dense embeddings capture *topic*
+well (this is unmistakably "a turnover KPI table," "a going-concern note")
+but are comparatively weak at the fine-grained, almost incidental detail of
+*which year's instance* of a heavily templated annual disclosure it is —
+exactly the kind of precise, low-semantic-weight token embeddings are known
+to underweight. On a single-company, multi-year corpus built from
+regulation-driven boilerplate, that is a real and severe limitation, not an
+artifact of a misconfigured search.
+
+This result is a concrete, evidenced case for **hybrid retrieval** as the
+next step — not because the schedule always said so, but because lexical and
+vector search have now been shown to fail in complementary, opposite ways on
+this exact corpus: lexical is weak at bridging vocabulary/paraphrase gaps
+(the caveat that motivated embeddings in the first place) while vector is
+weak at fine-grained temporal disambiguation between near-duplicate
+boilerplate (the failure just measured). Neither dominates the other here;
+combining literal term matching with semantic similarity is a plausible way
+to get both kinds of precision the other search alone lacks.
+
 ## Quality checks
 
 Most of this project's tests exercise a real local PostgreSQL instance (the
@@ -537,7 +624,8 @@ uv run ruff format .
 │   ├── main.py                         # FastAPI application factory
 │   ├── pdf_extraction.py               # Page-aware local PDF OCR
 │   ├── query_construction.py           # Deterministic stopword-removal query derivation
-│   └── retrieval_evaluation.py         # Recall@K / MRR scoring against labelled data
+│   ├── retrieval_evaluation.py         # Recall@K / MRR scoring against labelled data
+│   └── vector_search.py                # pgvector cosine-distance page search
 ├── tests/                              # Focused unit and API tests
 ├── .env.example                        # Safe configuration template
 ├── alembic.ini                         # Alembic configuration

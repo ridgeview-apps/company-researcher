@@ -125,7 +125,7 @@ async def test_extract_document_command_orchestrates_persisted_extraction(
         document_extraction_id=7,
         page_count=50,
         total_character_count=115_763,
-        created=True,
+        outcome="created",
     )
     persist = AsyncMock(return_value=extraction_result)
 
@@ -214,7 +214,7 @@ async def test_embed_document_command_orchestrates_persisted_embedding(
     embedding_result = EmbeddingPersistenceResult(
         document_embedding_id=9,
         page_count=12,
-        created=True,
+        outcome="created",
     )
     persist = AsyncMock(return_value=embedding_result)
 
