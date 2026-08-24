@@ -669,22 +669,52 @@ with three linear nodes:
 3. **`synthesize_finding`** — a second LLM call answers the question from
    only the retrieved pages, using the provider's strict JSON-schema
    structured-output mode to return a Pydantic `Finding` (a claim, an
-   `evidence_sufficient` flag, and a list of citations). Every citation is
-   then checked deterministically (not by an LLM judge) against the pages
-   actually retrieved for that run; a citation to any other page raises
+   `evidence_sufficient` flag, and a list of citations). Its system prompt
+   also instructs the model to distinguish a filing's different voices —
+   the directors' own report and notes versus the independent auditor's
+   report — and rely only on the party the question actually asks about
+   (see *Observed result* below for why). Every citation is then checked
+   deterministically (not by an LLM judge) against the pages actually
+   retrieved for that run; a citation to any other page raises
    `InvestigationAgentError` rather than silently passing through.
 
 ### Observed result
 
-Run for real against the FY2023 going-concern question above, the agent's
-own LLM-generated query found the same page eval question q6 identified as
-relevant, and the citation-provenance check passed. But the synthesized
-claim also cited the *auditor's* report page alongside the directors'
-going-concern note, conflating the auditor's opinion with what the
-*directors* identified — the question this run was actually asked. That is
-recorded here as a genuine, uncorrected limitation of this first version,
-not smoothed over: nothing in the current prompt or graph distinguishes a
-filing's different sections by authorial role.
+The first version of `synthesize_finding`'s prompt did not distinguish a
+filing's different voices. A real run against the FY2023 going-concern
+question above found the correct page (the same page eval question q6
+identified as relevant) via the agent's own LLM-generated query, and the
+citation-provenance check passed — but the synthesized claim also cited the
+*auditor's* report page alongside the directors' own going-concern note,
+attributing the auditor's opinion to the directors, the question actually
+asked about. That was recorded as a genuine, uncorrected limitation rather
+than smoothed over.
+
+The system prompt was then tightened with the voice-distinction instruction
+described above. Re-running the same question confirmed the fix: across
+several runs, citations no longer referenced the auditor's report.
+
+That same round of re-testing surfaced a different, still-open limitation:
+intermittently, an otherwise-correct answer also cited a page from a
+different filing than the one the question named. In one run,
+`document_extraction_id=44` was cited — the *amended FY2022* accounts
+(transaction `MzQwMTE2OTc4MmFkaXF6a2N4`), not FY2023. Two other runs of the
+identical question cited only pages from the correct FY2023 filing. The
+likely cause: `generate_query`'s system prompt asks for a short,
+discriminative query but does not force the fiscal year into it, so when
+the LLM's own query omits "2023", lexical search's literal-year-token
+disambiguation — the exact mechanism that made the evaluation dataset's
+hand-tuned queries score well on year disambiguation (e.g. `"Gymshark
+turnover 2025"`) — does not reliably apply. Gymshark's amended FY2022
+accounts reuse near-identical going-concern boilerplate to FY2023's, so an
+under-specified query matches both filings, and which one
+`synthesize_finding` draws from becomes a matter of LLM sampling. This is
+the same "near-duplicate boilerplate across fiscal years" failure mode
+already diagnosed for vector search above, now showing up via a different
+path — an LLM-generated query that does not reliably include the year —
+and is left open rather than prompt-patched, since it deserves the same
+deliberate design pass as everything else in this milestone rather than a
+rushed fix.
 
 This is deliberately the smallest useful slice: one question in, one
 finding out, no multi-step planning or looping across sub-questions, no

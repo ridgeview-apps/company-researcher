@@ -33,7 +33,14 @@ _FINDING_SYSTEM_PROMPT = (
     "document_extraction_id and page_number - never cite a page that is not "
     "listed. If the provided pages do not contain enough information to "
     "answer confidently, set evidence_sufficient to false and say so in the "
-    "claim rather than guessing or inventing an explanation."
+    "claim rather than guessing or inventing an explanation. UK statutory "
+    "accounts filings contain multiple distinct voices - for example the "
+    "directors' own report and notes, and the independent auditor's report "
+    "- which often discuss the same topic (such as going concern) on nearby "
+    "pages without being interchangeable. When the question asks what a "
+    "specific party stated or identified, rely only on that party's own "
+    "words; do not attribute the auditor's opinion or wording to the "
+    "directors, or vice versa, even where both discuss the same topic."
 )
 
 

@@ -143,18 +143,37 @@ retrieved for that run; a citation to any other page raises
 
 A real run against Gymshark's FY2023 going-concern question found the
 correct evidence (the same page eval question q6 identified as relevant)
-via its own LLM-generated query, but also surfaced a genuine, uncorrected
-limitation: the synthesized claim conflated the *auditor's* opinion on
-going concern with what the *directors* identified, citing the auditor's
-report page alongside the directors' own note. That is left as an open,
-recorded limitation rather than prompt-engineered away. This first slice is
-deliberately narrow: one natural-language question in, one structured
-`Finding` out, no multi-step planning/looping, no HITL, no LLM-judge, and
-no persisted/checkpointed graph state. `search_pages` is also still not
-scoped by company (a pre-existing limitation, now directly relevant here
-too, not just to retrieval evaluation) — with only Gymshark persisted this
-does not yet matter in practice, but a second company's filings would
-compete in the same lexical search unfiltered.
+via its own LLM-generated query, but also surfaced a genuine limitation:
+the synthesized claim conflated the *auditor's* opinion on going concern
+with what the *directors* identified, citing the auditor's report page
+alongside the directors' own note. `synthesize_finding`'s system prompt was
+then tightened to explicitly distinguish a filing's different voices
+(directors' own statements versus the independent auditor's report), and
+re-running the same question across several repeats confirmed the fix — no
+run since has cited the auditor's report.
+
+That same re-testing surfaced a different, still-open limitation:
+intermittently (one run out of three), the answer also cited a page from
+the *amended FY2022* accounts rather than the FY2023 filing the question
+named, because `generate_query` does not reliably force the fiscal year
+into its generated query — when it's omitted, lexical search's literal-
+year-token disambiguation (the exact mechanism that made the evaluation
+dataset's hand-tuned queries score well on year disambiguation) doesn't
+reliably apply, and Gymshark's amended FY2022 accounts reuse near-identical
+going-concern boilerplate to FY2023's. This is the same "near-duplicate
+boilerplate across fiscal years" failure mode already diagnosed for vector
+search, now showing up via a different path. It is left open rather than
+prompt-patched, since it deserves the same deliberate design pass as
+everything else in this milestone. See README.md's "Run the investigation
+agent" section for the full detail.
+
+This first slice remains deliberately narrow: one natural-language question
+in, one structured `Finding` out, no multi-step planning/looping, no HITL,
+no LLM-judge, and no persisted/checkpointed graph state. `search_pages` is
+also still not scoped by company (a pre-existing limitation, now directly
+relevant here too, not just to retrieval evaluation) — with only Gymshark
+persisted this does not yet matter in practice, but a second company's
+filings would compete in the same lexical search unfiltered.
 
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
