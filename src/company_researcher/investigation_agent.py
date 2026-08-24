@@ -1,3 +1,4 @@
+import re
 from collections.abc import Sequence
 from typing import TypedDict, cast
 
@@ -8,6 +9,7 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.db.models import DocumentPage
+from company_researcher.fiscal_year_extraction import extract_fiscal_years
 from company_researcher.lexical_search import PageMatch, search_pages
 from company_researcher.llm_client import ChatMessage, ChatProvider
 
@@ -46,6 +48,29 @@ _FINDING_SYSTEM_PROMPT = (
 
 class InvestigationAgentError(Exception):
     """Raised when the agent produces a finding that violates its evidence contract."""
+
+
+def _force_unambiguous_fiscal_year(query: str, question: str) -> str:
+    """Append the question's fiscal year to `query` when exactly one is named.
+
+    `generate_query`'s LLM call does not reliably include a literal year
+    token in its generated query, and lexical search's OR-combined
+    `ts_rank` needs that literal token to disambiguate near-identical
+    boilerplate across fiscal years (see README's "Run the investigation
+    agent" section for the observed failure). Only applied when the
+    question names exactly one year: the evaluation dataset's hand-tuned
+    queries for multi-year range questions (e.g. "FY2021 through FY2025")
+    deliberately omit any year at all, so forcing one in here for those
+    would diverge from that established, measured-good behaviour instead
+    of fixing the single-year case that actually failed.
+    """
+    years = extract_fiscal_years(question)
+    if len(years) != 1:
+        return query
+    year = years[0]
+    if re.search(rf"\b{year}\b", query):
+        return query
+    return f"{query} {year}".strip()
 
 
 class RetrievedPage(BaseModel):
@@ -146,7 +171,8 @@ def _build_graph(
                 ChatMessage(role="user", content=state["question"]),
             ]
         )
-        return {"generated_query": query.strip()}
+        forced_query = _force_unambiguous_fiscal_year(query.strip(), state["question"])
+        return {"generated_query": forced_query}
 
     async def retrieve_evidence_node(state: InvestigationState) -> InvestigationState:
         matches = await search_pages(

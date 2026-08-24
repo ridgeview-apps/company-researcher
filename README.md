@@ -716,10 +716,57 @@ and is left open rather than prompt-patched, since it deserves the same
 deliberate design pass as everything else in this milestone rather than a
 rushed fix.
 
-This is deliberately the smallest useful slice: one question in, one
-finding out, no multi-step planning or looping across sub-questions, no
-human-in-the-loop review, no LLM-as-judge, and no persisted/checkpointed
-graph state. `search_pages` is also still not scoped by company (see
+### Fixing the fiscal-year-disambiguation leak
+
+The cross-fiscal-year limitation above was addressed, and the fix is
+measured, not assumed to have worked. `fiscal_year_extraction.py` adds
+`extract_fiscal_years()`, a deterministic regex-based function that pulls
+plain 4-digit years out of a question's text (normalising an "FY" prefix
+away, since filing text never uses one). `investigation_agent.py`'s
+`_force_unambiguous_fiscal_year()` then appends the question's year to
+`generate_query`'s LLM-generated query whenever the question names exactly
+one year and the query doesn't already contain it as a literal token —
+deliberately *not* applied when a question names zero years or more than
+one, since the evaluation dataset's hand-tuned queries for genuine
+multi-year range questions (e.g. q2 and q4, "FY2021 through FY2025")
+omit any year token at all, and forcing one in for those would diverge
+from that established, measured-good behaviour rather than fix anything.
+
+This closes the originally diagnosed gap — the generated query now
+reliably contains the literal year token — but real-corpus testing
+surfaced a second, distinct mechanism behind the same symptom that this
+fix does not close. Across 8 runs of the FY2023 going-concern question (5
+via the CLI, 3 via a diagnostic script that also inspected the graph's
+intermediate `retrieved_pages` state), the generated query included
+"2023" in every run, confirming the query-generation gap is fixed. But
+the year is only one of roughly five OR-combined terms in the query, and
+near-duplicate going-concern boilerplate pages from the amended FY2022
+filing (`document_extraction_id=44`) and the original FY2022 filing
+(`document_extraction_id=43`) still matched enough of the *other* terms
+to enter the top-5 retrieved context in every one of the 8 runs. From
+there, whether `synthesize_finding` actually cited one of those
+wrong-year pages alongside the correct FY2023 page came down to LLM
+sampling: it happened in 2 of the 8 runs — a leak rate not clearly
+better than the roughly 1-in-3 rate originally reported above, on a
+sample this small.
+
+So the honest result is a partial fix: query generation is fixed and
+retrieval ranking of the correct page is measurably strengthened, but
+cross-year evidence-mixing is not eliminated, because the residual leak
+happens at a different point — which near-duplicate pages survive into
+`context_pages` — not at query term selection. Filtering retrieved
+candidates by literal year match, or some other content-level mechanism,
+remains open and deliberately deferred rather than folded into this
+change, since it is a larger design decision (and one that could
+wrongly exclude a genuinely relevant page that doesn't happen to restate
+the year) deserving its own agreed-upon design pass, not a same-session
+follow-on patch.
+
+This first slice is deliberately the smallest useful slice: one question
+in, one finding out, no multi-step planning or looping across
+sub-questions, no human-in-the-loop review, no LLM-as-judge, and no
+persisted/checkpointed graph state. `search_pages` is also still not
+scoped by company (see
 [Measure the lexical-search retrieval baseline](#measure-the-lexical-search-retrieval-baseline)) —
 with only Gymshark persisted this does not yet matter in practice, but a
 second company's filings would compete unfiltered in the same search.
@@ -788,6 +835,7 @@ uv run ruff format .
 │   ├── embedding_persistence.py        # Idempotent page-embedding persistence
 │   ├── embeddings_client.py            # Async client for the embeddings provider
 │   ├── extraction_persistence.py       # Idempotent page-extraction persistence
+│   ├── fiscal_year_extraction.py       # Deterministic fiscal-year extraction from question text
 │   ├── hybrid_search.py                # Reciprocal Rank Fusion of lexical and vector rankings
 │   ├── ingestion.py                    # Idempotent persistence of source data
 │   ├── investigation_agent.py          # LangGraph investigation agent and citation validation

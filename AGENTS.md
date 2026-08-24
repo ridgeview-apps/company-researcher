@@ -162,10 +162,34 @@ dataset's hand-tuned queries score well on year disambiguation) doesn't
 reliably apply, and Gymshark's amended FY2022 accounts reuse near-identical
 going-concern boilerplate to FY2023's. This is the same "near-duplicate
 boilerplate across fiscal years" failure mode already diagnosed for vector
-search, now showing up via a different path. It is left open rather than
-prompt-patched, since it deserves the same deliberate design pass as
-everything else in this milestone. See README.md's "Run the investigation
-agent" section for the full detail.
+search, now showing up via a different path.
+
+That fiscal-year gap has since been addressed and measured, and the
+result is a genuine but partial fix, not a closed issue.
+`fiscal_year_extraction.py`'s `extract_fiscal_years()` deterministically
+pulls plain 4-digit years out of a question's text, and
+`investigation_agent.py`'s `_force_unambiguous_fiscal_year()` appends the
+question's year to `generate_query`'s output whenever the question names
+exactly one year and the query doesn't already contain it — deliberately
+skipped for questions naming zero or multiple years, since the evaluation
+dataset's hand-tuned queries for genuine multi-year range questions (q2,
+q4) omit any year token too, and forcing one in there would diverge from
+that established, measured-good behaviour. Across 8 real runs of the
+FY2023 going-concern question (5 via the CLI, 3 via a diagnostic script
+inspecting intermediate graph state), the generated query reliably
+included "2023" every time — the originally diagnosed query-generation
+gap is closed. But near-duplicate going-concern pages from the amended
+and original FY2022 filings still entered the retrieved top-5 context in
+every run regardless (the year is only one of several OR-combined terms),
+and `synthesize_finding` still cited one of those wrong-year pages in 2 of
+the 8 runs — a leak rate not clearly better than the roughly 1-in-3 rate
+originally observed, on a small sample. The residual mechanism is
+different from the one fixed: which near-duplicate pages survive into
+`context_pages`, not what terms the query contains. Filtering retrieved
+candidates by literal year match, or another content-level mechanism,
+remains open and deliberately deferred as its own design decision rather
+than folded into this fix. See README.md's "Run the investigation agent"
+section for the full detail.
 
 This first slice remains deliberately narrow: one natural-language question
 in, one structured `Finding` out, no multi-step planning/looping, no HITL,

@@ -21,6 +21,7 @@ from company_researcher.investigation_agent import (
     Citation,
     Finding,
     InvestigationAgentError,
+    _force_unambiguous_fiscal_year,
     investigate,
 )
 from company_researcher.llm_client import ChatMessage
@@ -48,6 +49,41 @@ class FakeChatClient:
     ) -> _StructuredResponse:
         self.complete_structured_calls.append(messages)
         return cast(_StructuredResponse, self._finding)
+
+
+def test_force_unambiguous_fiscal_year_appends_a_missing_single_year() -> None:
+    query = _force_unambiguous_fiscal_year(
+        "going concern committed facility", "What was the position in FY2023?"
+    )
+
+    assert query == "going concern committed facility 2023"
+
+
+def test_force_unambiguous_fiscal_year_does_not_duplicate_an_already_present_year() -> (
+    None
+):
+    query = _force_unambiguous_fiscal_year(
+        "Gymshark turnover 2025", "What was turnover for FY2025?"
+    )
+
+    assert query == "Gymshark turnover 2025"
+
+
+def test_force_unambiguous_fiscal_year_leaves_range_questions_unchanged() -> None:
+    query = _force_unambiguous_fiscal_year(
+        "turnover cost of sales gross profit",
+        "How did turnover change year-over-year from FY2021 through FY2025?",
+    )
+
+    assert query == "turnover cost of sales gross profit"
+
+
+def test_force_unambiguous_fiscal_year_leaves_yearless_questions_unchanged() -> None:
+    query = _force_unambiguous_fiscal_year(
+        "directors secretary registered office", "Who were the directors?"
+    )
+
+    assert query == "directors secretary registered office"
 
 
 @pytest_asyncio.fixture
@@ -245,3 +281,50 @@ async def test_investigate_reports_insufficient_evidence_when_nothing_is_retriev
     assert finding.citations == []
     synthesis_prompt = chat_client.complete_structured_calls[0][-1].content
     assert "No evidence pages were retrieved" in synthesis_prompt
+
+
+@pytest.mark.asyncio
+async def test_investigate_disambiguates_near_duplicate_pages_by_forced_year(
+    session: AsyncSession, company: Company
+) -> None:
+    """Regression test for the cross-fiscal-year evidence-mixing bug (see README.md).
+
+    Two filings share near-identical boilerplate differing only by year. The
+    fake LLM's generated query omits the year, as observed in the real
+    intermittent failure; `_force_unambiguous_fiscal_year` must still steer
+    lexical search to the year the question actually names.
+    """
+    correct_extraction = await _create_filing_with_pages(
+        session,
+        "investigation-transaction-year-2023",
+        ["Quebec romeo sierra tango whiskey xray disclosure for 2023."],
+    )
+    await _create_filing_with_pages(
+        session,
+        "investigation-transaction-year-2022",
+        ["Quebec romeo sierra tango whiskey xray disclosure for 2022."],
+    )
+    expected_finding = Finding(
+        claim="Quebec romeo sierra tango whiskey xray, per the 2023 filing.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=correct_extraction.id,
+                page_number=1,
+                supporting_text="disclosure for 2023",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="quebec romeo sierra tango whiskey xray disclosure",
+        finding=expected_finding,
+    )
+
+    finding = await investigate(
+        session,
+        chat_client,
+        "What did quebec romeo sierra tango whiskey xray disclose in the 2023 filing?",
+        context_pages=1,
+    )
+
+    assert finding == expected_finding
