@@ -39,11 +39,15 @@ can:
   measure the resulting hybrid retrieval baseline against the same evaluation
   corpus (see
   [Measure the hybrid retrieval baseline](#measure-the-hybrid-retrieval-baseline)
-  below).
+  below); and
+- answer one natural-language investigation question at a time with a small
+  LangGraph agent that generates its own lexical search query, retrieves
+  evidence pages, and produces a structured, citation-grounded finding whose
+  citations are validated against the evidence actually retrieved (see
+  [Run the investigation agent](#run-the-investigation-agent) below).
 
-LLM generation, LangGraph, temporal analysis, and human-in-the-loop workflows
-remain deliberately deferred until their evidence and retrieval foundations
-exist.
+Temporal analysis and human-in-the-loop workflows remain deliberately
+deferred until the relevant project phase.
 
 ## Prerequisites
 
@@ -52,7 +56,8 @@ exist.
 - Docker with Docker Compose (Docker Desktop or OrbStack both work)
 - Tesseract OCR 5 with English language data
 - A Companies House REST API key
-- An OpenAI API key (only needed for `embed-document`)
+- An OpenAI API key (only needed for `embed-document`, `evaluate-retrieval
+  --retrieval-method vector|hybrid`, and `investigate`)
 
 Install Tesseract on macOS with Homebrew:
 
@@ -635,6 +640,60 @@ weaker method before fusing, or a different combination strategy entirely
 remain open, deliberately unexplored questions rather than assumed next
 steps.
 
+## Run the investigation agent
+
+Answer one natural-language investigation question over the persisted
+corpus:
+
+```bash
+uv run company-researcher investigate "What did the directors identify as Gymshark's going-concern position in the FY2023 accounts, and does the evidence support that?"
+```
+
+Run with no argument to use that same question as the default. The command
+runs a small [LangGraph](https://github.com/langchain-ai/langgraph)
+`StateGraph` ([`investigation_agent.py`](src/company_researcher/investigation_agent.py))
+with three linear nodes:
+
+1. **`generate_query`** — an LLM call (via
+   [`llm_client.py`](src/company_researcher/llm_client.py), an async
+   OpenAI-compatible chat-completion client mirroring
+   `embeddings_client.py`'s shape) turns the question into a short lexical
+   search query, the same role a human played when hand-tuning the
+   evaluation dataset's `query` field — except now produced at run time from
+   the question alone, with no access to the correct answer.
+2. **`retrieve_evidence`** — the generated query is issued to lexical
+   `search_pages` only. Vector and hybrid search stay unwired here
+   deliberately: the measured results above show lexical outperforming both
+   on this corpus, so lexical is what the agent calls, not because it was
+   the only retrieval method built.
+3. **`synthesize_finding`** — a second LLM call answers the question from
+   only the retrieved pages, using the provider's strict JSON-schema
+   structured-output mode to return a Pydantic `Finding` (a claim, an
+   `evidence_sufficient` flag, and a list of citations). Every citation is
+   then checked deterministically (not by an LLM judge) against the pages
+   actually retrieved for that run; a citation to any other page raises
+   `InvestigationAgentError` rather than silently passing through.
+
+### Observed result
+
+Run for real against the FY2023 going-concern question above, the agent's
+own LLM-generated query found the same page eval question q6 identified as
+relevant, and the citation-provenance check passed. But the synthesized
+claim also cited the *auditor's* report page alongside the directors'
+going-concern note, conflating the auditor's opinion with what the
+*directors* identified — the question this run was actually asked. That is
+recorded here as a genuine, uncorrected limitation of this first version,
+not smoothed over: nothing in the current prompt or graph distinguishes a
+filing's different sections by authorial role.
+
+This is deliberately the smallest useful slice: one question in, one
+finding out, no multi-step planning or looping across sub-questions, no
+human-in-the-loop review, no LLM-as-judge, and no persisted/checkpointed
+graph state. `search_pages` is also still not scoped by company (see
+[Measure the lexical-search retrieval baseline](#measure-the-lexical-search-retrieval-baseline)) —
+with only Gymshark persisted this does not yet matter in practice, but a
+second company's filings would compete unfiltered in the same search.
+
 ## Quality checks
 
 Most of this project's tests exercise a real local PostgreSQL instance (the
@@ -692,7 +751,7 @@ uv run ruff format .
 │   ├── companies_house/                # Replaceable source integration
 │   ├── db/                             # SQLAlchemy engine, sessions, and models
 │   ├── artifact_store.py               # Content-addressed source artifacts
-│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, and evaluation CLI
+│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, and investigation CLI
 │   ├── config.py                       # Environment-backed settings
 │   ├── discriminative_query.py         # Corpus document-frequency query ranking
 │   ├── document_ingestion.py           # Filing-document acquisition and persistence
@@ -701,7 +760,9 @@ uv run ruff format .
 │   ├── extraction_persistence.py       # Idempotent page-extraction persistence
 │   ├── hybrid_search.py                # Reciprocal Rank Fusion of lexical and vector rankings
 │   ├── ingestion.py                    # Idempotent persistence of source data
+│   ├── investigation_agent.py          # LangGraph investigation agent and citation validation
 │   ├── lexical_search.py               # PostgreSQL full-text page search
+│   ├── llm_client.py                   # Async client for the chat completions provider
 │   ├── main.py                         # FastAPI application factory
 │   ├── pdf_extraction.py               # Page-aware local PDF OCR
 │   ├── query_construction.py           # Deterministic stopword-removal query derivation

@@ -123,16 +123,50 @@ deliberately agreed next step instead, not an assumed one; it will inherit
 retrieval's current limitations, particularly the temporal-disambiguation
 gap diagnosed above, rather than block on further retrieval tuning.
 
+The LangGraph investigation-agent milestone's first slice is now built and
+has been run against the real persisted Gymshark corpus, not just in tests.
+`llm_client.py` adds an async, OpenAI-compatible chat-completion client
+(mirroring `embeddings_client.py`'s shape, including strict-mode structured
+output for Pydantic response models) and `investigation_agent.py` adds a
+three-node LangGraph `StateGraph` — `generate_query` (LLM, from the
+natural-language question) → `retrieve_evidence` (lexical `search_pages`
+only, per the measured retrieval results above) → `synthesize_finding`
+(LLM, structured `Finding` output) — exposed via `company-researcher
+investigate [question]`. Unlike the evaluation dataset's hand-tuned
+queries, `generate_query` is produced by the LLM at run time from the
+question alone; retrieval stays lexical-only because that is what the
+measured results above show winning on this corpus, not because it was the
+only option built. Every citation the LLM emits is validated
+deterministically (not by an LLM judge) against the pages actually
+retrieved for that run; a citation to any other page raises
+`InvestigationAgentError` rather than silently passing through.
+
+A real run against Gymshark's FY2023 going-concern question found the
+correct evidence (the same page eval question q6 identified as relevant)
+via its own LLM-generated query, but also surfaced a genuine, uncorrected
+limitation: the synthesized claim conflated the *auditor's* opinion on
+going concern with what the *directors* identified, citing the auditor's
+report page alongside the directors' own note. That is left as an open,
+recorded limitation rather than prompt-engineered away. This first slice is
+deliberately narrow: one natural-language question in, one structured
+`Finding` out, no multi-step planning/looping, no HITL, no LLM-judge, and
+no persisted/checkpointed graph state. `search_pages` is also still not
+scoped by company (a pre-existing limitation, now directly relevant here
+too, not just to retrieval evaluation) — with only Gymshark persisted this
+does not yet matter in practice, but a second company's filings would
+compete in the same lexical search unfiltered.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or
 code was added.
 
-Do not add LLM generation, LangGraph, HITL, LLM judges, reranking, advanced
-RAG, or hard-coded historical as-of behavior until the relevant project
-phase and until deliberately agreed as the next milestone. Keep evaluation
-work limited to the small dataset and deterministic retrieval metrics needed
-for the baseline.
+Do not add HITL, LLM judges, reranking, advanced RAG, multi-step
+planning/looping, vector/hybrid retrieval in the agent, or hard-coded
+historical as-of behavior until the relevant project phase and until
+deliberately agreed as the next milestone. Keep evaluation work limited to
+the small dataset and deterministic retrieval metrics needed for the
+baseline.
 
 ## Engineering conventions
 

@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Literal, Protocol, Self
+from typing import Literal, Protocol, Self, TypeVar
 
 import httpx2
 from pydantic import BaseModel, ValidationError
@@ -9,6 +9,8 @@ from pydantic import BaseModel, ValidationError
 from company_researcher.config import Settings
 
 ChatRole = Literal["system", "user", "assistant"]
+
+StructuredResponse = TypeVar("StructuredResponse", bound=BaseModel)
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,14 @@ class ChatProvider(Protocol):
 
     async def complete(self, messages: Sequence[ChatMessage]) -> str:
         """Complete a chat, returning the assistant's response text."""
+        ...
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        response_model: type[StructuredResponse],
+    ) -> StructuredResponse:
+        """Complete a chat, validating the response against `response_model`."""
         ...
 
 
@@ -120,20 +130,62 @@ class ChatClient:
 
     async def complete(self, messages: Sequence[ChatMessage]) -> str:
         """Complete a chat, returning the assistant's response text."""
+        return await self._request_completion(messages)
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        response_model: type[StructuredResponse],
+    ) -> StructuredResponse:
+        """Complete a chat, validating the response against `response_model`.
+
+        Uses the provider's strict JSON-schema structured-output mode, built
+        from `response_model.model_json_schema()`. Strict mode requires every
+        object in the schema to set `additionalProperties: false`, which
+        Pydantic only emits when a model's `model_config` sets
+        `extra="forbid"` — that is the caller's responsibility, not this
+        client's.
+        """
+        content = await self._request_completion(
+            messages,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_model.__name__,
+                    "strict": True,
+                    "schema": response_model.model_json_schema(),
+                },
+            },
+        )
+        try:
+            return response_model.model_validate_json(content)
+        except ValidationError as error:
+            raise ChatResponseError(
+                "Chat provider returned content that does not match the expected schema"
+            ) from error
+
+    async def _request_completion(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        response_format: dict[str, object] | None = None,
+    ) -> str:
+        """Send one chat completion request and return the response text."""
         if not messages:
             raise ValueError("messages must not be empty")
 
+        body: dict[str, object] = {
+            "model": self._model,
+            "messages": [
+                {"role": message.role, "content": message.content}
+                for message in messages
+            ],
+        }
+        if response_format is not None:
+            body["response_format"] = response_format
+
         try:
-            response = await self._client.post(
-                "chat/completions",
-                json={
-                    "model": self._model,
-                    "messages": [
-                        {"role": message.role, "content": message.content}
-                        for message in messages
-                    ],
-                },
-            )
+            response = await self._client.post("chat/completions", json=body)
         except httpx2.RequestError as error:
             raise ChatConnectionError(
                 "Could not connect to the chat provider"

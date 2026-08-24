@@ -37,6 +37,8 @@ from company_researcher.embedding_persistence import embed_document_extraction
 from company_researcher.embeddings_client import EmbeddingsClient, EmbeddingsError
 from company_researcher.extraction_persistence import extract_filing_document
 from company_researcher.ingestion import ingest_company
+from company_researcher.investigation_agent import InvestigationAgentError, investigate
+from company_researcher.llm_client import ChatClient, ChatError
 from company_researcher.pdf_extraction import PdfExtractionError, TesseractPdfExtractor
 from company_researcher.retrieval_evaluation import (
     RetrievalEvaluationError,
@@ -49,6 +51,10 @@ from company_researcher.retrieval_evaluation import (
 )
 
 DEFAULT_EVALUATION_DATASET = "evaluation/gymshark_retrieval_questions.json"
+DEFAULT_INVESTIGATION_QUESTION = (
+    "What did the directors identify as Gymshark's going-concern position "
+    "in the FY2023 accounts, and does the evidence support that?"
+)
 
 
 class DocumentExtractionCommandError(Exception):
@@ -161,6 +167,21 @@ def build_parser() -> argparse.ArgumentParser:
             "to the known-relevant pages."
         ),
     )
+
+    investigation_parser = subparsers.add_parser(
+        "investigate",
+        help="Run the investigation agent for one question over persisted filings.",
+    )
+    investigation_parser.add_argument(
+        "question",
+        nargs="?",
+        default=DEFAULT_INVESTIGATION_QUESTION,
+        help=(
+            "Natural-language investigation question (default: a Gymshark "
+            "FY2023 going-concern question)."
+        ),
+    )
+
     return parser
 
 
@@ -400,6 +421,32 @@ def run_retrieval_evaluation(
     )
 
 
+async def investigate_command(question: str) -> str:
+    """Run the investigation agent for one question and serialize its finding."""
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            async with ChatClient.from_settings(settings) as chat_client:
+                finding = await investigate(session, chat_client, question)
+    finally:
+        await engine.dispose()
+
+    payload = {
+        "question": question,
+        "claim": finding.claim,
+        "evidence_sufficient": finding.evidence_sufficient,
+        "citations": [citation.model_dump() for citation in finding.citations],
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def run_investigation(question: str) -> str:
+    """Run one investigation from the synchronous CLI."""
+    return asyncio.run(investigate_command(question))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Company Researcher command-line interface."""
     args = build_parser().parse_args(argv)
@@ -417,6 +464,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = run_document_ingestion(args.company_number, args.transaction_id)
         elif args.command == "ingest":
             output = run_ingestion(args.company_number)
+        elif args.command == "investigate":
+            output = run_investigation(args.question)
         else:
             output = run_inspection(args.company_number)
     except CompaniesHouseConfigurationError as error:
@@ -449,6 +498,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except RetrievalEvaluationError as error:
         print(f"Retrieval evaluation error: {error}", file=sys.stderr)
+        return 1
+    except (InvestigationAgentError, ChatError) as error:
+        print(f"Investigation error: {error}", file=sys.stderr)
         return 1
 
     print(output)

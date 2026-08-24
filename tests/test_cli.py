@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -22,6 +23,12 @@ from company_researcher.document_ingestion import DocumentIngestionError
 from company_researcher.embedding_persistence import EmbeddingPersistenceResult
 from company_researcher.embeddings_client import EmbeddingsError
 from company_researcher.extraction_persistence import ExtractionPersistenceResult
+from company_researcher.investigation_agent import (
+    Citation,
+    Finding,
+    InvestigationAgentError,
+)
+from company_researcher.llm_client import ChatError
 from company_researcher.pdf_extraction import PdfExtractionError
 
 
@@ -254,6 +261,72 @@ async def test_embed_document_command_orchestrates_persisted_embedding(
     engine.dispose.assert_awaited_once_with()
 
 
+def test_main_prints_investigation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "run_investigation", lambda question: '{"ok": true}')
+
+    exit_code = cli.main(["investigate", "What happened?"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == '{"ok": true}\n'
+    assert captured.err == ""
+
+
+@pytest.mark.asyncio
+async def test_investigate_command_orchestrates_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = MagicMock()
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=False)
+    session_factory = MagicMock(return_value=session_context)
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    chat_client = object()
+    chat_client_context = MagicMock()
+    chat_client_context.__aenter__ = AsyncMock(return_value=chat_client)
+    chat_client_context.__aexit__ = AsyncMock(return_value=False)
+    finding = Finding(
+        claim="Evidence supports the conclusion.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(document_extraction_id=7, page_number=29, supporting_text="quote")
+        ],
+    )
+    run_agent = AsyncMock(return_value=finding)
+
+    monkeypatch.setattr(cli, "Settings", lambda: MagicMock())
+    monkeypatch.setattr(cli, "create_database_engine", lambda settings: engine)
+    monkeypatch.setattr(
+        cli,
+        "create_session_factory",
+        lambda configured_engine: session_factory,
+    )
+    fake_chat_client_cls = MagicMock()
+    fake_chat_client_cls.from_settings = MagicMock(return_value=chat_client_context)
+    monkeypatch.setattr(cli, "ChatClient", fake_chat_client_cls)
+    monkeypatch.setattr(cli, "investigate", run_agent)
+
+    output = await cli.investigate_command("What is the going-concern position?")
+
+    assert json.loads(output) == {
+        "question": "What is the going-concern position?",
+        "claim": "Evidence supports the conclusion.",
+        "evidence_sufficient": True,
+        "citations": [
+            {"document_extraction_id": 7, "page_number": 29, "supporting_text": "quote"}
+        ],
+    }
+    run_agent.assert_awaited_once_with(
+        session, chat_client, "What is the going-concern position?"
+    )
+    engine.dispose.assert_awaited_once_with()
+
+
 @pytest.mark.parametrize(
     ("error_factory", "expected_exit_code", "expected_message"),
     [
@@ -301,6 +374,16 @@ async def test_embed_document_command_orchestrates_persisted_embedding(
             EmbeddingsError,
             1,
             "Document embedding error",
+        ),
+        (
+            InvestigationAgentError,
+            1,
+            "Investigation error",
+        ),
+        (
+            ChatError,
+            1,
+            "Investigation error",
         ),
     ],
 )

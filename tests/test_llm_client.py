@@ -3,6 +3,7 @@ from collections.abc import Callable, Coroutine
 
 import httpx2
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from company_researcher.config import Settings
 from company_researcher.llm_client import (
@@ -13,6 +14,14 @@ from company_researcher.llm_client import (
     ChatRateLimitError,
     ChatResponseError,
 )
+
+
+class _Verdict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    approved: bool
+    reason: str
+
 
 SyncMockHandler = Callable[[httpx2.Request], httpx2.Response]
 AsyncMockHandler = Callable[[httpx2.Request], Coroutine[None, None, httpx2.Response]]
@@ -126,6 +135,64 @@ async def test_complete_rejects_null_content() -> None:
     async with create_client(handler) as client:
         with pytest.raises(ChatResponseError):
             await client.complete([ChatMessage(role="user", content="Hello")])
+
+
+@pytest.mark.asyncio
+async def test_complete_structured_sends_strict_json_schema_and_validates_result() -> (
+    None
+):
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        assert body["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "_Verdict",
+                "strict": True,
+                "schema": _Verdict.model_json_schema(),
+            },
+        }
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {"approved": True, "reason": "Evidence is sufficient."}
+                            ),
+                        }
+                    }
+                ]
+            },
+        )
+
+    async with create_client(handler) as client:
+        verdict = await client.complete_structured(
+            [ChatMessage(role="user", content="Is this approved?")], _Verdict
+        )
+
+    assert verdict == _Verdict(approved=True, reason="Evidence is sufficient.")
+
+
+@pytest.mark.asyncio
+async def test_complete_structured_rejects_content_that_fails_validation() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": json.dumps({})}}
+                ]
+            },
+            request=request,
+        )
+
+    async with create_client(handler) as client:
+        with pytest.raises(ChatResponseError):
+            await client.complete_structured(
+                [ChatMessage(role="user", content="Is this approved?")], _Verdict
+            )
 
 
 def test_from_settings_requires_api_key() -> None:
