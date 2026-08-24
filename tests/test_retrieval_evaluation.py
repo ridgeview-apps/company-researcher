@@ -24,6 +24,7 @@ from company_researcher.retrieval_evaluation import (
     RetrievalEvaluationError,
     evaluate_question,
     evaluate_question_by_embedding,
+    evaluate_question_hybrid,
     load_evaluation_dataset,
     run_evaluation,
 )
@@ -318,6 +319,124 @@ async def test_evaluate_question_by_embedding_scores_zero_beyond_search_depth(
 
     assert metrics.recall_at_k == {1: 0.0}
     assert metrics.reciprocal_rank == 0.0
+
+
+@pytest.mark.asyncio
+async def test_evaluate_question_hybrid_scores_a_page_found_by_both_methods(
+    session: AsyncSession, company: Company
+) -> None:
+    first_page_text = "Alpha bravo charlie appears on this page."
+    second_page_text = "Delta echo foxtrot."
+    question_text = "Where does alpha bravo appear?"
+    extraction = await _create_filing_with_pages(
+        session, "eval-hybrid-transaction-alpha", [first_page_text, second_page_text]
+    )
+    provider = FakeEmbeddingsProvider(
+        {
+            first_page_text: _axis_vector(0),
+            second_page_text: _axis_vector(1),
+            question_text: _axis_vector(0),
+        }
+    )
+    await embed_document_extraction(
+        session,
+        provider,
+        extraction,
+        provider=FAKE_EMBEDDING_PROVIDER,
+        model=FAKE_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+    )
+    question = EvaluationQuestion(
+        id="q-alpha-hybrid",
+        text=question_text,
+        query="alpha bravo",
+        relevant_pages=(
+            RelevantPage(transaction_id="eval-hybrid-transaction-alpha", page_number=1),
+        ),
+    )
+
+    metrics = await evaluate_question_hybrid(
+        session,
+        provider,
+        question,
+        TEST_COMPANY_NUMBER,
+        provider=FAKE_EMBEDDING_PROVIDER,
+        model=FAKE_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+        k_values=(1, 3),
+        search_depth=10,
+    )
+
+    assert metrics.recall_at_k == {1: 1.0, 3: 1.0}
+    assert metrics.reciprocal_rank == 1.0
+
+
+@pytest.mark.asyncio
+async def test_evaluate_question_hybrid_recovers_a_page_vector_alone_would_miss(
+    session: AsyncSession, company: Company
+) -> None:
+    """The relevant page only matches lexically; vector search alone ranks
+    the irrelevant page first because its embedding is identical to the
+    question's. Fusion still recovers the relevant page because it's the
+    top lexical result, unlike pure vector search at k=1."""
+    relevant_page_text = "Alpha bravo charlie appears on this page."
+    irrelevant_page_text = "Delta echo foxtrot golf hotel."
+    question_text = "Where does alpha bravo appear?"
+    extraction = await _create_filing_with_pages(
+        session,
+        "eval-hybrid-transaction-beta",
+        [relevant_page_text, irrelevant_page_text],
+    )
+    provider = FakeEmbeddingsProvider(
+        {
+            relevant_page_text: _axis_vector(1),  # far from the question vector
+            irrelevant_page_text: _axis_vector(0),  # identical to the question vector
+            question_text: _axis_vector(0),
+        }
+    )
+    await embed_document_extraction(
+        session,
+        provider,
+        extraction,
+        provider=FAKE_EMBEDDING_PROVIDER,
+        model=FAKE_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+    )
+    question = EvaluationQuestion(
+        id="q-beta-hybrid",
+        text=question_text,
+        query="alpha bravo",
+        relevant_pages=(
+            RelevantPage(transaction_id="eval-hybrid-transaction-beta", page_number=1),
+        ),
+    )
+
+    vector_only_metrics = await evaluate_question_by_embedding(
+        session,
+        provider,
+        question,
+        TEST_COMPANY_NUMBER,
+        provider=FAKE_EMBEDDING_PROVIDER,
+        model=FAKE_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+        k_values=(1,),
+        search_depth=10,
+    )
+    assert vector_only_metrics.recall_at_k == {1: 0.0}
+
+    hybrid_metrics = await evaluate_question_hybrid(
+        session,
+        provider,
+        question,
+        TEST_COMPANY_NUMBER,
+        provider=FAKE_EMBEDDING_PROVIDER,
+        model=FAKE_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+        k_values=(1,),
+        search_depth=10,
+    )
+
+    assert hybrid_metrics.recall_at_k == {1: 1.0}
 
 
 def test_load_evaluation_dataset_parses_gymshark_fixture() -> None:

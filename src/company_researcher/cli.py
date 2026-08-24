@@ -42,6 +42,7 @@ from company_researcher.retrieval_evaluation import (
     RetrievalEvaluationError,
     load_evaluation_dataset,
     run_evaluation,
+    run_hybrid_evaluation,
     run_vector_evaluation,
     with_derived_queries,
     with_discriminative_queries,
@@ -129,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluation_parser.add_argument(
         "--retrieval-method",
-        choices=["lexical", "vector"],
+        choices=["lexical", "vector", "hybrid"],
         default="lexical",
         help=(
             "'lexical' (default) uses PostgreSQL full-text search; "
@@ -138,7 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
             "embeddings provider and ranks pages by cosine distance against "
             "previously persisted page embeddings (run embed-document "
             "first); --query-source is ignored and a real embeddings API "
-            "call is made per question."
+            "call is made per question. 'hybrid' runs both lexical (using "
+            "--query-source) and vector search and combines their rankings "
+            "with Reciprocal Rank Fusion; like 'vector', a real embeddings "
+            "API call is made per question."
         ),
     )
     evaluation_parser.add_argument(
@@ -146,14 +150,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["dataset", "derived", "derived-idf"],
         default="dataset",
         help=(
-            "Only used when --retrieval-method is 'lexical'. 'dataset' uses "
-            "each question's hand-picked 'query' field (default). 'derived' "
-            "ignores it and derives a query from 'text' with derive_query(), "
-            "a deterministic stopword-removal rule. 'derived-idf' further "
-            "ranks derive_query()'s content words by document frequency "
-            "across all persisted document pages and keeps only the rarest "
-            "few. None of these can have been tuned to the known-relevant "
-            "pages."
+            "Used when --retrieval-method is 'lexical' or 'hybrid' ('vector' "
+            "ignores it and always embeds the full question text). 'dataset' "
+            "uses each question's hand-picked 'query' field (default). "
+            "'derived' ignores it and derives a query from 'text' with "
+            "derive_query(), a deterministic stopword-removal rule. "
+            "'derived-idf' further ranks derive_query()'s content words by "
+            "document frequency across all persisted document pages and "
+            "keeps only the rarest few. None of these can have been tuned "
+            "to the known-relevant pages."
         ),
     )
     return parser
@@ -335,6 +340,12 @@ async def evaluate_retrieval_command(
     try:
         session_factory = create_session_factory(engine)
         async with session_factory() as session:
+            if retrieval_method in ("lexical", "hybrid"):
+                if query_source == "derived":
+                    dataset = with_derived_queries(dataset)
+                elif query_source == "derived-idf":
+                    dataset = await with_discriminative_queries(session, dataset)
+
             if retrieval_method == "vector":
                 async with EmbeddingsClient.from_settings(
                     settings
@@ -347,11 +358,19 @@ async def evaluate_retrieval_command(
                         model=settings.openai_embedding_model,
                         dimensions=EMBEDDING_DIMENSIONS,
                     )
+            elif retrieval_method == "hybrid":
+                async with EmbeddingsClient.from_settings(
+                    settings
+                ) as embeddings_client:
+                    summary = await run_hybrid_evaluation(
+                        session,
+                        embeddings_client,
+                        dataset,
+                        provider="openai",
+                        model=settings.openai_embedding_model,
+                        dimensions=EMBEDDING_DIMENSIONS,
+                    )
             else:
-                if query_source == "derived":
-                    dataset = with_derived_queries(dataset)
-                elif query_source == "derived-idf":
-                    dataset = await with_discriminative_queries(session, dataset)
                 summary = await run_evaluation(session, dataset)
     finally:
         await engine.dispose()

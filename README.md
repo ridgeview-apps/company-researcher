@@ -29,11 +29,21 @@ can:
 - measure a deterministic PostgreSQL lexical-search baseline against a small,
   manually labelled retrieval evaluation corpus using Recall@K and MRR (see
   [Measure the lexical-search retrieval baseline](#measure-the-lexical-search-retrieval-baseline)
-  below for the measured results).
+  below for the measured results);
+- embed filing pages with an OpenAI-compatible embeddings API and measure a
+  pgvector cosine-distance vector-only retrieval baseline against the same
+  evaluation corpus (see
+  [Measure the vector-only retrieval baseline](#measure-the-vector-only-retrieval-baseline)
+  below); and
+- combine the lexical and vector rankings with Reciprocal Rank Fusion and
+  measure the resulting hybrid retrieval baseline against the same evaluation
+  corpus (see
+  [Measure the hybrid retrieval baseline](#measure-the-hybrid-retrieval-baseline)
+  below).
 
-LLM generation, embeddings, hybrid retrieval, LangGraph, temporal analysis, and
-human-in-the-loop workflows remain deliberately deferred until their evidence
-and retrieval foundations exist.
+LLM generation, LangGraph, temporal analysis, and human-in-the-loop workflows
+remain deliberately deferred until their evidence and retrieval foundations
+exist.
 
 ## Prerequisites
 
@@ -555,6 +565,76 @@ boilerplate (the failure just measured). Neither dominates the other here;
 combining literal term matching with semantic similarity is a plausible way
 to get both kinds of precision the other search alone lacks.
 
+## Measure the hybrid retrieval baseline
+
+[`hybrid_search.py`](src/company_researcher/hybrid_search.py) combines the
+lexical and vector rankings above with Reciprocal Rank Fusion (RRF), scoring
+each page `sum(1 / (k + rank))` (k=60) across whichever ranking(s) it appears
+in. RRF combines by rank position rather than raw score deliberately:
+`ts_rank` and cosine distance are on incomparable, oppositely-oriented
+scales, so combining them by value would need an unvalidated normalization
+step first. Each method's already-established query input is reused
+unchanged — the lexical component uses whatever `--query-source` selects,
+the vector component always embeds the full question text:
+
+```bash
+uv run company-researcher evaluate-retrieval --retrieval-method hybrid
+```
+
+### Measured result
+
+Measured against the same 6 Gymshark questions, combining the hand-tuned
+lexical baseline (`--query-source dataset`, the CLI default) with the
+vector-only baseline above:
+
+| Question | Recall@5 | Recall@10 | Reciprocal rank |
+| --- | --- | --- | --- |
+| q1-fy2025-turnover | 0.00 | 0.00 | 0.05 |
+| q2-turnover-trend-fy2021-fy2025 | 0.00 | 0.00 | 0.08 |
+| q3-fy2022-amendment-comparison | 0.00 | 0.00 | 0.04 |
+| q4-directors-fy2021-fy2025 | 0.00 | 0.25 | 0.17 |
+| q5-dividends-fy2022-vs-fy2025 | 0.00 | 0.00 | 0.06 |
+| q6-going-concern-fy2023 | 0.50 | 0.50 | 0.20 |
+| **Mean** | **0.083** | **0.125** | **0.099** |
+
+This is a genuine negative result. Hybrid scores worse than hand-tuned
+lexical alone (Mean Recall@5 = 0.625, Recall@10 = 0.833, MRR = 0.446) on
+*every single question*, and only marginally better than vector alone (Mean
+Recall@5 = 0.000, Recall@10 = 0.083, MRR = 0.044). Combining the two
+rankings did not split the difference between them — it pulled the strong
+lexical signal down almost to vector's level.
+
+Q1 shows why, and it isn't a bug. Lexical search alone ranks the actually
+relevant FY2025 turnover page (document extraction 33, page 20) at position
+2 — this is why hand-tuned lexical scored RR=0.50 there. But vector search's
+diagnosed weakness above means that same page doesn't appear anywhere in
+vector's top 50 at all. Under RRF's `1/(60 + rank)` scoring, that page's one
+strong lexical placement (`1/62 ≈ 0.0161`) loses to several irrelevant pages
+that rank only moderately in *both* lists and so accumulate two smaller
+contributions each — for example, extraction 44 page 35 (lexical rank 7,
+vector rank 3, fused score 0.0308) and extraction 43 page 35 (lexical rank
+6, vector rank 9, fused score 0.0296) both outscore it, pushing the actually
+relevant page out of the fused top 10 entirely.
+
+Equal-weighted RRF implicitly assumes both rankers place the correct page
+somewhere reasonably near the top of *each* list, even if not first — that a
+weaker ranker is merely noisy, not blind. This corpus violates that
+assumption specifically on the questions where lexical is strongest: vector
+search's diagnosed failure isn't "ranks the right page a bit lower," it's
+"misses it past position 50 entirely" on exactly the year-disambiguation
+questions (see the vector-only section above). Fusing with a ranker that
+fails that completely, rather than merely imprecisely, doesn't average out
+the error — it lets several distractors that are mediocre in both lists
+outscore a page one method already found confidently.
+
+This does not mean hybrid retrieval is a dead end on this corpus, only that
+naive, equal-weighted Reciprocal Rank Fusion over these two specific
+rankings, at this depth, is not competitive with hand-tuned lexical search
+alone here. Weighting the two rankings unevenly, filtering out a clearly
+weaker method before fusing, or a different combination strategy entirely
+remain open, deliberately unexplored questions rather than assumed next
+steps.
+
 ## Quality checks
 
 Most of this project's tests exercise a real local PostgreSQL instance (the
@@ -619,6 +699,7 @@ uv run ruff format .
 │   ├── embedding_persistence.py        # Idempotent page-embedding persistence
 │   ├── embeddings_client.py            # Async client for the embeddings provider
 │   ├── extraction_persistence.py       # Idempotent page-extraction persistence
+│   ├── hybrid_search.py                # Reciprocal Rank Fusion of lexical and vector rankings
 │   ├── ingestion.py                    # Idempotent persistence of source data
 │   ├── lexical_search.py               # PostgreSQL full-text page search
 │   ├── main.py                         # FastAPI application factory

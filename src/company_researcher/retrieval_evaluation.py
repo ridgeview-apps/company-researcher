@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from company_researcher.db.models import DocumentExtraction, Filing, FilingDocument
 from company_researcher.discriminative_query import derive_discriminative_query
 from company_researcher.embeddings_client import EmbeddingsProvider
+from company_researcher.hybrid_search import reciprocal_rank_fusion
 from company_researcher.lexical_search import search_pages
 from company_researcher.query_construction import derive_query
 from company_researcher.vector_search import search_pages_by_embedding
@@ -298,6 +299,75 @@ async def run_vector_evaluation(
     per_question = tuple(
         [
             await evaluate_question_by_embedding(
+                session,
+                embeddings_client,
+                question,
+                dataset.company_number,
+                provider=provider,
+                model=model,
+                dimensions=dimensions,
+                k_values=k_values,
+                search_depth=search_depth,
+            )
+            for question in dataset.questions
+        ]
+    )
+    return _summarize(per_question, k_values)
+
+
+async def evaluate_question_hybrid(
+    session: AsyncSession,
+    embeddings_client: EmbeddingsProvider,
+    question: EvaluationQuestion,
+    company_number: str,
+    *,
+    provider: str,
+    model: str,
+    dimensions: int,
+    k_values: tuple[int, ...] = DEFAULT_K_VALUES,
+    search_depth: int = DEFAULT_SEARCH_DEPTH,
+) -> QuestionMetrics:
+    """Score one question's Reciprocal-Rank-Fused lexical+vector results.
+
+    Reuses each method's own established query input unchanged: `question.query`
+    for lexical search, `question.text` embedded fresh for vector search. Both
+    rankings are computed to `search_depth` before fusion, since a page can
+    only contribute to the fused ranking if it was retrieved in the first
+    place.
+    """
+    relevant = await _resolve_relevant_extraction_pages(
+        session, company_number, question.relevant_pages
+    )
+    lexical_matches = await search_pages(session, question.query, limit=search_depth)
+    (query_embedding,) = await embeddings_client.embed([question.text])
+    vector_matches = await search_pages_by_embedding(
+        session,
+        query_embedding,
+        provider=provider,
+        model=model,
+        dimensions=dimensions,
+        limit=search_depth,
+    )
+    fused = reciprocal_rank_fusion(lexical_matches, vector_matches)
+    retrieved = [(match.document_extraction_id, match.page_number) for match in fused]
+    return _score_retrieved_pages(question.id, retrieved, relevant, k_values)
+
+
+async def run_hybrid_evaluation(
+    session: AsyncSession,
+    embeddings_client: EmbeddingsProvider,
+    dataset: EvaluationDataset,
+    *,
+    provider: str,
+    model: str,
+    dimensions: int,
+    k_values: tuple[int, ...] = DEFAULT_K_VALUES,
+    search_depth: int = DEFAULT_SEARCH_DEPTH,
+) -> EvaluationSummary:
+    """Evaluate every question in a dataset using Reciprocal Rank Fusion."""
+    per_question = tuple(
+        [
+            await evaluate_question_hybrid(
                 session,
                 embeddings_client,
                 question,

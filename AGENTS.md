@@ -81,16 +81,48 @@ template text. Neither dominates the other on this corpus. That is now a
 concrete, evidenced case for hybrid retrieval as the next milestone — not
 an assumed one.
 
+The hybrid retrieval milestone is now complete and measured, and it
+produced a genuine negative result. `hybrid_search.py`'s
+`reciprocal_rank_fusion()` combines `search_pages()` and
+`search_pages_by_embedding()` by rank position (`sum(1 / (k + rank))`,
+k=60) rather than raw score, since `ts_rank` and cosine distance are on
+incomparable, oppositely-oriented scales that a value-based combination
+would need to normalize first. `evaluate-retrieval --retrieval-method
+hybrid` runs both rankings — the lexical component using whatever
+`--query-source` selects, the vector component always the full question
+text, matching each method's own established convention — and fuses them
+before scoring.
+
+Measured against the same 6 Gymshark questions, combining hand-tuned
+lexical (`--query-source dataset`, the CLI default) with vector: Mean
+Recall@5 = 0.083, Recall@10 = 0.125, MRR = 0.099 — worse than hand-tuned
+lexical alone (0.625 / 0.833 / 0.446) on every question, and only
+marginally better than vector alone (0.000 / 0.083 / 0.044). Diagnosed
+cause (see `README.md` for the worked Q1 example): equal-weighted RRF
+implicitly assumes both rankers place the correct page somewhere reasonably
+near the top of *each* list, even if not first. Vector search's diagnosed
+weakness on this corpus breaks that assumption on exactly the questions
+where lexical is strongest — it doesn't rank the correct year-specific page
+a bit lower, it misses it past position 50 entirely — so fusing lets
+several distractors that are merely mediocre in both lists accumulate two
+contributions and outscore a page lexical search already found confidently
+with one. This is not evidence that hybrid retrieval is a dead end here,
+only that naive equal-weighted RRF over these two rankings, at this depth,
+underperforms hand-tuned lexical search alone on this corpus. Weighting the
+rankings unevenly, filtering out a clearly weaker method before fusing, or
+a different combination strategy remain open, deliberately unexplored
+questions rather than assumed next steps.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or
 code was added.
 
-Do not add LLM generation, LangGraph, HITL, LLM judges, hybrid retrieval,
-reranking, advanced RAG, or hard-coded historical as-of behavior until the
-relevant project phase and until deliberately agreed as the next milestone.
-Keep evaluation work limited to the small dataset and deterministic
-retrieval metrics needed for the baseline.
+Do not add LLM generation, LangGraph, HITL, LLM judges, reranking, advanced
+RAG, or hard-coded historical as-of behavior until the relevant project
+phase and until deliberately agreed as the next milestone. Keep evaluation
+work limited to the small dataset and deterministic retrieval metrics needed
+for the baseline.
 
 ## Engineering conventions
 
