@@ -23,11 +23,22 @@ manually labelled Gymshark retrieval evaluation corpus
 Matching a full natural-language question against single pages scored poorly
 (Mean Recall@5 = Recall@10 = 0.0, MRR = 0.03). Using a short, targeted keyword
 query instead — same `ts_rank` ranking, only the query text changed — raised
-this to Mean Recall@5 = 0.625, Recall@10 = 0.833, MRR = 0.446. Both results are
-recorded in `README.md`. The remaining gap (particularly on
-`q3-fy2022-amendment-comparison`, whose relevant pages span two different
-vocabularies across two documents) is a reasonable candidate for what hybrid
-retrieval should be measured against next.
+this to Mean Recall@5 = 0.625, Recall@10 = 0.833, MRR = 0.446, but those
+queries were hand-tuned by trial and error directly against the 6 questions
+being scored, so that result does not show generalization to an unseen
+question. A deterministic, corpus-blind query-construction function,
+`derive_query()` in `query_construction.py` (stopword removal only, no
+knowledge of relevant pages), was added to test that generalization honestly
+and scored no better than the full-sentence baseline (Mean Recall@5 =
+Recall@10 = 0.0, MRR = 0.03) — a genuine negative result, not a bug. It shows
+that query *brevity* was not what made the hand-tuned queries work; what
+mattered was a human selecting *rare, corpus-discriminative* terms for a
+specific page, which a generic stopword rule cannot replicate. All three
+results are recorded in `README.md`. A corpus-aware term-selection rule
+(e.g. IDF-weighted) is a more promising deterministic next step than
+stopword removal, and establishing a trustworthy, non-leaked lexical
+baseline this way remains a prerequisite for any honest comparison against
+hybrid retrieval.
 
 Work incrementally. The next milestone has not yet been agreed. Challenge and
 refine any proposed next milestone against the actual codebase and persisted

@@ -35,6 +35,7 @@ from company_researcher.retrieval_evaluation import (
     RetrievalEvaluationError,
     load_evaluation_dataset,
     run_evaluation,
+    with_derived_queries,
 )
 
 DEFAULT_EVALUATION_DATASET = "evaluation/gymshark_retrieval_questions.json"
@@ -102,6 +103,17 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=DEFAULT_EVALUATION_DATASET,
         help=f"Path to an evaluation dataset (default: {DEFAULT_EVALUATION_DATASET}).",
+    )
+    evaluation_parser.add_argument(
+        "--query-source",
+        choices=["dataset", "derived"],
+        default="dataset",
+        help=(
+            "'dataset' uses each question's hand-picked 'query' field "
+            "(default). 'derived' ignores it and derives a query from "
+            "'text' with derive_query(), a deterministic rule that cannot "
+            "have been tuned to the known-relevant pages."
+        ),
     )
     return parser
 
@@ -226,9 +238,11 @@ def run_document_extraction(filing_document_id: int) -> str:
     return asyncio.run(extract_document_command(filing_document_id))
 
 
-async def evaluate_retrieval_command(dataset_path: str) -> str:
+async def evaluate_retrieval_command(dataset_path: str, query_source: str) -> str:
     """Measure lexical-search Recall@K and MRR against a labelled question set."""
     dataset = load_evaluation_dataset(Path(dataset_path))
+    if query_source == "derived":
+        dataset = with_derived_queries(dataset)
     settings = Settings()
     engine = create_database_engine(settings)
     try:
@@ -254,9 +268,9 @@ async def evaluate_retrieval_command(dataset_path: str) -> str:
     return "\n".join(lines)
 
 
-def run_retrieval_evaluation(dataset_path: str) -> str:
+def run_retrieval_evaluation(dataset_path: str, query_source: str) -> str:
     """Run one retrieval evaluation from the synchronous CLI."""
-    return asyncio.run(evaluate_retrieval_command(dataset_path))
+    return asyncio.run(evaluate_retrieval_command(dataset_path, query_source))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -265,7 +279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "evaluate-retrieval":
-            output = run_retrieval_evaluation(args.dataset_path)
+            output = run_retrieval_evaluation(args.dataset_path, args.query_source)
         elif args.command == "extract-document":
             output = run_document_extraction(args.filing_document_id)
         elif args.command == "ingest-document":

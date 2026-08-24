@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from sqlalchemy import select
@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.db.models import DocumentExtraction, Filing, FilingDocument
 from company_researcher.lexical_search import search_pages
+from company_researcher.query_construction import derive_query
 
 DEFAULT_K_VALUES: tuple[int, ...] = (5, 10)
 DEFAULT_SEARCH_DEPTH = 50
@@ -68,6 +69,23 @@ def load_evaluation_dataset(path: Path) -> EvaluationDataset:
     )
     return EvaluationDataset(
         company_number=payload["company_number"], questions=questions
+    )
+
+
+def with_derived_queries(dataset: EvaluationDataset) -> EvaluationDataset:
+    """Replace each question's hand-picked query with `derive_query(text)`.
+
+    Unlike the dataset's own `query` field, a derived query cannot have been
+    tuned to that question's known-relevant pages, since `derive_query`
+    depends only on `text`. This gives an honest (if not necessarily better)
+    measurement of query wording without hand-tuning bias.
+    """
+    return EvaluationDataset(
+        company_number=dataset.company_number,
+        questions=tuple(
+            replace(question, query=derive_query(question.text))
+            for question in dataset.questions
+        ),
     )
 
 

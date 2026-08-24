@@ -277,11 +277,22 @@ stemmed `tsquery`, accelerated by a GIN expression index) with no embeddings,
 vector search, or LLM involved. The command reports Recall@K and Mean
 Reciprocal Rank per question and averaged across the dataset.
 
+By default the command issues each question's hand-picked `query` field. Pass
+`--query-source derived` to instead ignore `query` and derive one from `text`
+with `derive_query()` — a fixed, deterministic stopword-removal rule defined
+in [`query_construction.py`](src/company_researcher/query_construction.py)
+that depends only on the question text, never on which pages are known to be
+relevant, so it cannot be tuned to a specific answer:
+
+```bash
+uv run company-researcher evaluate-retrieval --query-source derived
+```
+
 ### Measured results
 
-Two lexical query strategies have been measured against the same 6-question
+Three lexical query strategies have been measured against the same 6-question
 Gymshark evaluation set, using the same `ts_rank`/GIN-indexed search underneath
-both times — only the text sent as the query changed.
+every time — only the text sent as the query changed.
 
 **Full question sentence as the query** (each question's `text` field — the
 first thing tried):
@@ -323,18 +334,50 @@ of a full sentence. Q3 remains the hardest case even with a good query — its
 relevant pages span two different vocabularies (profit-and-loss language and
 balance-sheet language, for both the original and amended documents), which a
 single short query struggles to boost simultaneously. That is a genuine,
-still-open limitation of pure lexical search on this corpus, not a bug, and a
-reasonable candidate for what hybrid retrieval should be measured against
-next.
+still-open limitation of pure lexical search on this corpus, not a bug.
 
-**Caveat**: each `query` string was hand-tuned by trial and error directly
-against these same 6 questions' known-relevant pages, not chosen blind or
-validated against held-out questions. So this result shows that a human who
-already knows the correct answer can hand-craft a query that finds it — it
-does not show that this approach would generalize well to a genuinely new,
-unseen question. A more rigorous version of this step would hold out some
-questions during query tuning, or replace hand-picked queries with an
-automated, generalizable query-construction strategy.
+**Caveat on the short-query result above**: each `query` string was
+hand-tuned by trial and error directly against these same 6 questions'
+known-relevant pages, not chosen blind or validated against held-out
+questions. So that result shows that a human who already knows the correct
+answer can hand-craft a query that finds it — it does not show that this
+approach generalizes to a genuinely new, unseen question.
+
+**Derived query, from `derive_query(text)`** (a fixed stopword-removal rule,
+applied identically to all six questions with no knowledge of which pages are
+relevant — see [`query_construction.py`](src/company_researcher/query_construction.py)):
+
+| Question | Recall@5 | Recall@10 | Reciprocal rank |
+| --- | --- | --- | --- |
+| q1-fy2025-turnover | 0.00 | 0.00 | 0.04 |
+| q2-turnover-trend-fy2021-fy2025 | 0.00 | 0.00 | 0.00 |
+| q3-fy2022-amendment-comparison | 0.00 | 0.00 | 0.00 |
+| q4-directors-fy2021-fy2025 | 0.00 | 0.00 | 0.00 |
+| q5-dividends-fy2022-vs-fy2025 | 0.00 | 0.00 | 0.06 |
+| q6-going-concern-fy2023 | 0.00 | 0.00 | 0.08 |
+| **Mean** | **0.000** | **0.000** | **0.030** |
+
+This result is a genuine negative finding, not a bug: it scores no better
+than matching the full sentence. Stopword removal alone still leaves 7–13
+content words per question (for example Q3 derives to `amended FY2022
+accounts AAMD change reported turnover profit balance sheet figures compared
+original FY2022 accounts`), including common, non-discriminative terms —
+"accounts", "compared", "figures", "position" — that recur across most pages
+of an accounts filing. Under OR-combined `ts_rank`, this dilutes ranking the
+same way a full sentence does. What made the hand-tuned queries work was not
+mainly their brevity but that a human who already knew the answer selected
+*rare, discriminative* terms for that specific page (several lifted directly
+from the answer itself, e.g. "revolving credit facility", "statement of
+financial position") — which is exactly the tuning bias the caveat above
+describes, now visible from the other direction: removing that bias while
+keeping only a generic, corpus-blind heuristic reproduces the original
+sentence-matching failure. Query *length/term-discriminativeness*, not
+sentence-vs-keyword phrasing, is the operative variable, and a naïve
+stopword-only rule does not control for it. A corpus-aware term-selection
+rule (e.g. weighting by inverse document frequency across the persisted
+pages) is a more promising deterministic next step than stopword removal
+alone, and is a prerequisite for a trustworthy comparison against hybrid
+retrieval.
 
 ## Quality checks
 
