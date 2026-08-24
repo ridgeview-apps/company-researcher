@@ -33,12 +33,24 @@ and scored no better than the full-sentence baseline (Mean Recall@5 =
 Recall@10 = 0.0, MRR = 0.03) — a genuine negative result, not a bug. It shows
 that query *brevity* was not what made the hand-tuned queries work; what
 mattered was a human selecting *rare, corpus-discriminative* terms for a
-specific page, which a generic stopword rule cannot replicate. All three
-results are recorded in `README.md`. A corpus-aware term-selection rule
-(e.g. IDF-weighted) is a more promising deterministic next step than
-stopword removal, and establishing a trustworthy, non-leaked lexical
-baseline this way remains a prerequisite for any honest comparison against
-hybrid retrieval.
+specific page, which a generic stopword rule cannot replicate. A second
+deterministic strategy, `derive_discriminative_query()` in
+`discriminative_query.py`, ranks `derive_query()`'s content words by
+document frequency across all persisted document pages (still corpus-blind,
+still no knowledge of relevant pages) and keeps only the rarest few. It
+improved on stopword-only (Mean Recall@10 0.0 → 0.25, MRR 0.03 → 0.13) but
+remained well below hand-tuned, because page-level document frequency
+conflates "rare because unimportant" with "common because it's structural
+boilerplate repeated within every filing" — e.g. it drops `directors` and
+`Gymshark` from the directors question despite both being exactly the right
+terms, because they recur across dozens of pages per filing. All four
+results are recorded in `README.md`. This is now a reasonably explored,
+non-leaked lexical baseline: closing the remaining gap through smarter
+deterministic *lexical* term selection alone has diminishing returns on a
+corpus this size, which is a better-evidenced motivation for exploring
+semantic (embedding-based) retrieval next than the original schedule's
+assumption — though not evidence that it would outperform lexical search
+outright.
 
 Work incrementally. The next milestone has not yet been agreed. Challenge and
 refine any proposed next milestone against the actual codebase and persisted

@@ -282,15 +282,20 @@ By default the command issues each question's hand-picked `query` field. Pass
 with `derive_query()` — a fixed, deterministic stopword-removal rule defined
 in [`query_construction.py`](src/company_researcher/query_construction.py)
 that depends only on the question text, never on which pages are known to be
-relevant, so it cannot be tuned to a specific answer:
+relevant, so it cannot be tuned to a specific answer. Pass `--query-source
+derived-idf` for a second deterministic strategy,
+[`derive_discriminative_query()`](src/company_researcher/discriminative_query.py),
+which further ranks `derive_query()`'s content words by document frequency
+across every persisted document page and keeps only the rarest few:
 
 ```bash
 uv run company-researcher evaluate-retrieval --query-source derived
+uv run company-researcher evaluate-retrieval --query-source derived-idf
 ```
 
 ### Measured results
 
-Three lexical query strategies have been measured against the same 6-question
+Four lexical query strategies have been measured against the same 6-question
 Gymshark evaluation set, using the same `ts_rank`/GIN-indexed search underneath
 every time — only the text sent as the query changed.
 
@@ -373,11 +378,65 @@ describes, now visible from the other direction: removing that bias while
 keeping only a generic, corpus-blind heuristic reproduces the original
 sentence-matching failure. Query *length/term-discriminativeness*, not
 sentence-vs-keyword phrasing, is the operative variable, and a naïve
-stopword-only rule does not control for it. A corpus-aware term-selection
-rule (e.g. weighting by inverse document frequency across the persisted
-pages) is a more promising deterministic next step than stopword removal
-alone, and is a prerequisite for a trustworthy comparison against hybrid
-retrieval.
+stopword-only rule does not control for it.
+
+**Discriminative query, from `derive_discriminative_query(text)`** (ranks
+`derive_query()`'s content words by document frequency across all persisted
+document pages — computed corpus-wide, never from a question's known-relevant
+pages — and keeps the 4 rarest):
+
+| Question | Recall@5 | Recall@10 | Reciprocal rank |
+| --- | --- | --- | --- |
+| q1-fy2025-turnover | 0.00 | 1.00 | 0.14 |
+| q2-turnover-trend-fy2021-fy2025 | 0.00 | 0.00 | 0.00 |
+| q3-fy2022-amendment-comparison | 0.00 | 0.00 | 0.06 |
+| q4-directors-fy2021-fy2025 | 0.00 | 0.00 | 0.02 |
+| q5-dividends-fy2022-vs-fy2025 | 0.00 | 0.00 | 0.06 |
+| q6-going-concern-fy2023 | 0.50 | 0.50 | 0.50 |
+| **Mean** | **0.083** | **0.250** | **0.130** |
+
+A real, if partial, improvement over stopword-only (Mean Recall@10 0.0 →
+0.25, MRR 0.03 → 0.13) — ranking by corpus rarity recovers some signal a
+generic stopword rule can't. But it falls well short of the hand-tuned
+result, and inspecting the actual queries shows two concrete, corpus-specific
+reasons why:
+
+1. **Boilerplate repetition defeats page-level document frequency.** Q4
+   derives to `secretary annual set according`, dropping both `directors`
+   (document frequency 110 pages) and `Gymshark` (234 pages) — the two most
+   relevant terms for "who were the directors" — because accounts filings
+   repeat director-related and company-identifying language across dozens of
+   pages (directors' report, statement of directors' responsibilities,
+   company information page, each repeated per filing year). A term being
+   common across *many pages* doesn't mean it's a poor filter for *the one
+   right page*; page-level IDF conflates the two. This is a single-company
+   corpus of 5 filings, so `Gymshark` in particular provides no discriminating
+   power here — it would likely behave very differently across a
+   multi-company corpus.
+2. **Literal-token mismatch.** `derive_query()` preserves `FY2021`/`FY2025`
+   verbatim from the question text, but the filings themselves say "2021"/
+   "2025" without the `FY` prefix, so those terms have document frequency 0
+   and are dropped by both derived strategies — not a ranking failure, a
+   vocabulary mismatch between how the question was phrased and how the
+   source text is written.
+
+Q6 (`concern going identify position`, Recall@5 = 0.50) is this strategy's
+best result and the counter-example: "going concern" is genuinely rare in
+this corpus (it's a specific accounting disclosure, not boilerplate), so
+IDF-based selection worked exactly as intended there.
+
+Together, the four results show that closing the gap to the hand-tuned
+baseline through smarter *deterministic lexical term selection* alone has
+diminishing returns on a corpus this size: page-level document frequency
+can't distinguish "rare because unimportant" from "common because it's
+structural boilerplate repeated within every filing." That is a materially
+different, better-evidenced case for exploring semantic (embedding-based)
+retrieval than "the schedule said so" — a semantic representation of a page
+doesn't depend on literal token match or corpus-wide term frequency the same
+way, so it isn't vulnerable to either failure mode diagnosed above. It is not
+evidence that hybrid retrieval would beat lexical search outright, only that
+lexical search's remaining deterministic query-construction options have
+been reasonably explored on this corpus first, rather than skipped.
 
 ## Quality checks
 

@@ -36,6 +36,7 @@ from company_researcher.retrieval_evaluation import (
     load_evaluation_dataset,
     run_evaluation,
     with_derived_queries,
+    with_discriminative_queries,
 )
 
 DEFAULT_EVALUATION_DATASET = "evaluation/gymshark_retrieval_questions.json"
@@ -106,13 +107,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluation_parser.add_argument(
         "--query-source",
-        choices=["dataset", "derived"],
+        choices=["dataset", "derived", "derived-idf"],
         default="dataset",
         help=(
             "'dataset' uses each question's hand-picked 'query' field "
             "(default). 'derived' ignores it and derives a query from "
-            "'text' with derive_query(), a deterministic rule that cannot "
-            "have been tuned to the known-relevant pages."
+            "'text' with derive_query(), a deterministic stopword-removal "
+            "rule. 'derived-idf' further ranks derive_query()'s content "
+            "words by document frequency across all persisted document "
+            "pages and keeps only the rarest few. None of these can have "
+            "been tuned to the known-relevant pages."
         ),
     )
     return parser
@@ -248,6 +252,8 @@ async def evaluate_retrieval_command(dataset_path: str, query_source: str) -> st
     try:
         session_factory = create_session_factory(engine)
         async with session_factory() as session:
+            if query_source == "derived-idf":
+                dataset = await with_discriminative_queries(session, dataset)
             summary = await run_evaluation(session, dataset)
     finally:
         await engine.dispose()

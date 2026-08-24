@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.db.models import DocumentExtraction, Filing, FilingDocument
+from company_researcher.discriminative_query import derive_discriminative_query
 from company_researcher.lexical_search import search_pages
 from company_researcher.query_construction import derive_query
 
@@ -87,6 +88,27 @@ def with_derived_queries(dataset: EvaluationDataset) -> EvaluationDataset:
             for question in dataset.questions
         ),
     )
+
+
+async def with_discriminative_queries(
+    session: AsyncSession, dataset: EvaluationDataset
+) -> EvaluationDataset:
+    """Replace each question's query with `derive_discriminative_query(session, text)`.
+
+    Like `with_derived_queries`, this cannot leak a specific answer: the
+    query depends only on `text` and corpus-wide document-frequency
+    statistics, never on which page is known to be relevant.
+    """
+    questions = tuple(
+        [
+            replace(
+                question,
+                query=await derive_discriminative_query(session, question.text),
+            )
+            for question in dataset.questions
+        ]
+    )
+    return EvaluationDataset(company_number=dataset.company_number, questions=questions)
 
 
 @dataclass(frozen=True)
