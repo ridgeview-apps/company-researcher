@@ -1,0 +1,140 @@
+{
+  "dataset": "nothing_technology_accounts_and_charges_v1",
+  "company_number": "12984564",
+  "company_name": "NOTHING TECHNOLOGY LIMITED",
+  "methodology": "Relevant pages were identified manually by reading the persisted OCR page text for each document (not invented from filing metadata alone). Documents are identified by their stable Companies House filing transaction_id rather than internal database identity columns, so the dataset survives a database reseed. Each question has both a natural-language 'text' (for human readability and reporting) and a short 'query' (the terms actually issued to lexical search); query wording was chosen by measuring against the persisted corpus, not guessed -- the same hand-tuning process used for the Gymshark dataset, with the same caveat that this does not show generalization to an unseen question. Unlike Gymshark's single-topic accounts corpus, this dataset also covers registered-charge (MR01) filings, chosen per docs/project-brief.md's suggested Nothing Technology use case of financing-related investigation and distinguishing evidence from speculation.",
+  "documents": [
+    {
+      "transaction_id": "MzM1NjgxNzkwNGFkaXF6a2N4",
+      "filing_type": "AA",
+      "period_end": "2021-10-31",
+      "role": "accounts-fy2021"
+    },
+    {
+      "transaction_id": "MzQzMjk2NTAwOGFkaXF6a2N4",
+      "filing_type": "AA",
+      "period_end": "2022-12-31",
+      "role": "accounts-fy2022"
+    },
+    {
+      "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4",
+      "filing_type": "AA",
+      "period_end": "2023-12-31",
+      "role": "accounts-fy2023"
+    },
+    {
+      "transaction_id": "MzQ0ODYxMDQyNGFkaXF6a2N4",
+      "filing_type": "MR01",
+      "charge_number": "129845640001",
+      "charge_created": "2024-12-18",
+      "role": "charge-santander-shares"
+    },
+    {
+      "transaction_id": "MzQ0ODYwOTkwOGFkaXF6a2N4",
+      "filing_type": "MR01",
+      "charge_number": "129845640002",
+      "charge_created": "2024-12-18",
+      "role": "charge-santander-fixed"
+    },
+    {
+      "transaction_id": "MzQ0ODYxMDA5NGFkaXF6a2N4",
+      "filing_type": "MR01",
+      "charge_number": "129845640003",
+      "charge_created": "2024-12-18",
+      "role": "charge-santander-ip"
+    },
+    {
+      "transaction_id": "MzUzMDMzOTg5MWFkaXF6a2N4",
+      "filing_type": "MR01",
+      "charge_number": "129845640004",
+      "charge_created": "2026-07-01",
+      "role": "charge-oceanii-ip"
+    },
+    {
+      "transaction_id": "MzUzMDM0MDQ4OGFkaXF6a2N4",
+      "filing_type": "MR01",
+      "charge_number": "129845640005",
+      "charge_created": "2026-07-01",
+      "role": "charge-oceanii-general"
+    },
+    {
+      "transaction_id": "MzUzMDM0MTU1MGFkaXF6a2N4",
+      "filing_type": "MR01",
+      "charge_number": "129845640006",
+      "charge_created": "2026-07-01",
+      "role": "charge-oceanii-general"
+    }
+  ],
+  "questions": [
+    {
+      "id": "q1-fy2023-revenue-loss",
+      "text": "What was Nothing Technology's revenue and loss for the year ended 31 December 2023, and how did it compare to the prior period?",
+      "query": "Nothing Technology revenue loss 2023",
+      "relevant_pages": [
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 4 },
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 6 },
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 12 }
+      ],
+      "note": "Strategic report KPI table (page 4): revenue GBP49,605k (2023) vs an adjusted 12-month 2022 comparator of GBP44,253k (12.1% growth). Statement of comprehensive income (page 12) states the unadjusted comparative: the 14-month period to 31 December 2022 reported GBP51,629k. Directors' report (page 6) states the loss after taxation was GBP59.4m (2022: GBP43.4m)."
+    },
+    {
+      "id": "q2-registered-charges-2024-2026",
+      "text": "What charges has Nothing Technology registered against its assets, and to which security agents?",
+      "query": "persons entitled security agent brief description",
+      "relevant_pages": [
+        { "transaction_id": "MzQ0ODYxMDQyNGFkaXF6a2N4", "page_number": 1 },
+        { "transaction_id": "MzQ0ODYwOTkwOGFkaXF6a2N4", "page_number": 1 },
+        { "transaction_id": "MzQ0ODYxMDA5NGFkaXF6a2N4", "page_number": 1 },
+        { "transaction_id": "MzUzMDMzOTg5MWFkaXF6a2N4", "page_number": 1 },
+        { "transaction_id": "MzUzMDM0MDQ4OGFkaXF6a2N4", "page_number": 1 },
+        { "transaction_id": "MzUzMDM0MTU1MGFkaXF6a2N4", "page_number": 1 }
+      ],
+      "note": "Two distinct batches, each three charges created the same day: 18 December 2024 (charge codes ...0001/0002/0003), all naming Banco Santander, S.A. as security agent, covering a shares pledge, a fixed charge over investments/plant/IP, and a US intellectual-property security agreement respectively; and 1 July 2026 (charge codes ...0004/0005/0006), all naming Ocean II PLO LLC as security agent -- a different lender entirely. This is a genuine, filing-established fact (the security agent changed between batches), not an inference."
+    },
+    {
+      "id": "q3-december-2024-facility-evidence",
+      "text": "What do the filings establish about the facility Nothing Technology entered into in December 2024, and which charges were registered in connection with it?",
+      "query": "facility agreement working capital December 2024 Santander",
+      "relevant_pages": [
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 6 },
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 7 },
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 16 },
+        { "transaction_id": "MzQ0ODYxMDQyNGFkaXF6a2N4", "page_number": 1 },
+        { "transaction_id": "MzQ0ODYwOTkwOGFkaXF6a2N4", "page_number": 1 },
+        { "transaction_id": "MzQ0ODYxMDA5NGFkaXF6a2N4", "page_number": 1 }
+      ],
+      "note": "The FY2023 accounts' post-reporting-date-events (page 6) and going-concern disclosures (page 7 directors' report, page 16 notes -- near-identical boilerplate, the same repeated-disclosure pattern documented for Gymshark's going-concern question) state that on 18 December 2024 the company and its ultimate holding company entered a facility agreement with a bank for GBP30m to support working capital. The three MR01 filings dated the same day (18/12/2024) name Banco Santander, S.A. as security agent. The accounts narrative never names Santander explicitly and states dates as prose ('18 December 2024') while the charge filings use numeric form ('18/12/2024') -- a vocabulary/format mismatch between the two document types, deliberately included as this dataset's hardest question, the same role q3 plays in the Gymshark dataset: correct grounding requires bridging two different documents' vocabularies, which a single short query struggles to boost simultaneously. This question is a deliberate test of whether retrieval alone can support answering 'what do the filings establish' -- it does not itself ask, and the dataset does not adjudicate, whether interpreting these charges as a sign of financial distress would be a supported inference or speculation beyond the evidence; that judgement belongs to the investigation agent, not to retrieval evaluation."
+    },
+    {
+      "id": "q4-directors-fy2021-fy2023",
+      "text": "Who were Nothing Technology's directors according to each set of accounts from FY2021 to FY2023?",
+      "query": "Nothing Technology directors Carl Pei",
+      "relevant_pages": [
+        { "transaction_id": "MzM1NjgxNzkwNGFkaXF6a2N4", "page_number": 3 },
+        { "transaction_id": "MzQzMjk2NTAwOGFkaXF6a2N4", "page_number": 4 },
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 6 }
+      ],
+      "note": "FY2021 company information page (the only directors source available -- this filing took small-company audit exemption and has no directors' report): Carl Pei, David Sanmartin Garcia. FY2022 directors' report: Carl Pei, David Sanmartin Garcia (resigned 1 April 2023), Timothy Holbrow (appointed 1 April 2023). FY2023 directors' report: identical director list and dates to FY2022's, since both cover the same 1 April 2023 change from either side of the accounting reference date."
+    },
+    {
+      "id": "q5-revenue-trend-fy2021-fy2023",
+      "text": "How did Nothing Technology's revenue change across the periods reported in its FY2022 and FY2023 accounts?",
+      "query": "revenue cost of sales gross profit loss",
+      "relevant_pages": [
+        { "transaction_id": "MzQzMjk2NTAwOGFkaXF6a2N4", "page_number": 10 },
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 12 }
+      ],
+      "note": "The FY2022 statement of comprehensive income (page 10) reports both the 14-month period to 31 December 2022 (GBP51,629k) and, as a restated comparative, the period from incorporation to 31 October 2021 (GBP3,140k). The FY2023 statement of comprehensive income (page 12) reports the year to 31 December 2023 (GBP49,605k) alongside the same FY2022 GBP51,629k comparative. No single document states all three periods together; the trend can only be assembled by combining both filings' comparative columns."
+    },
+    {
+      "id": "q6-going-concern-fy2023",
+      "text": "What did the directors identify as Nothing Technology's going-concern position in the FY2023 accounts, and what did they cite in support?",
+      "query": "going concern 2023 resources",
+      "relevant_pages": [
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 7 },
+        { "transaction_id": "MzQ0OTQ5MzgzNGFkaXF6a2N4", "page_number": 16 }
+      ],
+      "note": "Directors' report (page 7) and notes (page 16) state near-identical going-concern text: cash resources of GBP1.4m (2022: GBP4.6m) and current assets of GBP11.9m (2022: GBP11.1m), a letter from the ultimate parent confirming financial support for at least 12 months, the June 2023 $96m group fundraising round, and the December 2024 GBP30m debt fundraising. This mirrors the Gymshark going-concern question's dynamic: the FY2022 accounts' directors' report (page 4) states near-identical going-concern boilerplate for the prior period and is a genuine distractor a query must not be confused by."
+    }
+  ]
+}

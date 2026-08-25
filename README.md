@@ -39,6 +39,12 @@ can:
   measure the resulting hybrid retrieval baseline against the same evaluation
   corpus (see
   [Measure the hybrid retrieval baseline](#measure-the-hybrid-retrieval-baseline)
+  below);
+- persist a second company, Nothing Technology Ltd, and measure the same
+  lexical-search baseline against a second, independently hand-labelled
+  evaluation corpus covering both its accounts and registered-charge
+  filings (see
+  [Measure the second-company retrieval baseline: Nothing Technology](#measure-the-second-company-retrieval-baseline-nothing-technology)
   below); and
 - answer one natural-language investigation question at a time with a small
   LangGraph agent that generates its own lexical search query, retrieves
@@ -653,6 +659,111 @@ alone here. Weighting the two rankings unevenly, filtering out a clearly
 weaker method before fusing, or a different combination strategy entirely
 remain open, deliberately unexplored questions rather than assumed next
 steps.
+
+## Measure the second-company retrieval baseline: Nothing Technology
+
+A second company, Nothing Technology Ltd (`12984564`), is now persisted alongside
+Gymshark, chosen per `docs/project-brief.md`'s suggested use case
+(financing-related investigation, distinguishing evidence from speculation) --
+see [Scoping retrieval to one company](#scoping-retrieval-to-one-company)
+below for how it was ingested and the retrieval-evaluation bugs that
+ingesting it surfaced and fixed. Its filing history includes 3 accounts
+filings (accounting periods ended 2021-10-31, 2022-12-31, and 2023-12-31)
+and 6 registered-charge (`MR01`) filings in two batches: three charges
+created 18 December 2024 naming Banco Santander, S.A. as security agent,
+and three more created 1 July 2026 naming a different security agent,
+Ocean II PLO LLC.
+
+[`evaluation/nothing_technology_retrieval_questions.json`](evaluation/nothing_technology_retrieval_questions.json)
+is a second hand-labelled evaluation dataset, built with the identical
+methodology as Gymshark's: relevant pages identified manually by reading
+the real, persisted OCR page text, hand-tuned queries chosen by measuring
+against the real corpus (the same hand-tuning caveat the Gymshark dataset
+already documents applies here too -- this does not show generalization
+to an unseen question), documents identified by stable transaction ID.
+Unlike Gymshark's single-topic accounts corpus, three of its six questions
+(q2, q3, q6) span both accounts and charge filings, and q3 was deliberately
+designed as this dataset's hardest question -- correctly grounding it
+requires bridging the accounts' prose date format ("18 December 2024")
+with the charge filings' numeric one ("18/12/2024"), the same role q3
+plays in the Gymshark dataset. Score it the same way as the Gymshark
+dataset, by passing its path:
+
+```bash
+uv run company-researcher evaluate-retrieval evaluation/nothing_technology_retrieval_questions.json
+```
+
+### Measured result
+
+| Question | Recall@5 | Recall@10 | Reciprocal rank |
+| --- | --- | --- | --- |
+| q1-fy2023-revenue-loss | 0.67 | 1.00 | 1.00 |
+| q2-registered-charges-2024-2026 | 0.83 | 1.00 | 1.00 |
+| q3-december-2024-facility-evidence | 0.17 | 0.50 | 1.00 |
+| q4-directors-fy2021-fy2023 | 1.00 | 1.00 | 1.00 |
+| q5-revenue-trend-fy2021-fy2023 | 1.00 | 1.00 | 1.00 |
+| q6-going-concern-fy2023 | 1.00 | 1.00 | 1.00 |
+| **Mean** | **0.778** | **0.917** | **1.000** |
+
+Every question's top-ranked page is relevant (RR = 1.00 throughout), even
+q3, the deliberately hardest question -- its accounts-side relevant page
+(the post-reporting-date-events disclosure) ranks first by itself, but the
+charge filings' MR01 summary pages it also needs don't appear until much
+lower, which is why its Recall@5/@10 are this dataset's weakest by a wide
+margin, the same role Q3 plays in the Gymshark results above. This is a
+stronger hand-tuned baseline than Gymshark's own (0.625/0.833/0.468), which
+is a property of this specific 6-question set (its charges question, q2,
+has an unusually clean one-page-per-document match against six near-
+identically-formatted MR01 summary pages) rather than evidence that
+lexical search performs better on this company's filings in general.
+
+### Comparing the deterministic query strategies across both companies
+
+The same two corpus-blind, deterministic query-construction strategies
+measured against Gymshark were also run against this dataset:
+
+```bash
+uv run company-researcher evaluate-retrieval evaluation/nothing_technology_retrieval_questions.json --query-source derived
+uv run company-researcher evaluate-retrieval evaluation/nothing_technology_retrieval_questions.json --query-source derived-idf
+```
+
+| Strategy | Recall@5 | Recall@10 | MRR | (Gymshark's own result) |
+| --- | --- | --- | --- | --- |
+| `derived` (stopword-only) | 0.278 | 0.417 | 0.230 | 0.000 / 0.000 / 0.030 |
+| `derived-idf` (corpus-rarity ranked) | 0.250 | 0.306 | 0.193 | 0.083 / 0.250 / 0.130 |
+
+Both strategies score meaningfully better here than they did on Gymshark's
+corpus -- not a contradiction of the earlier findings, but a real,
+corpus-dependent difference worth understanding rather than just noting.
+Inspecting the actual derived queries surfaced a genuine, new failure
+mode for `derive_discriminative_query()`, distinct from the boilerplate-
+repetition problem diagnosed on Gymshark: `derive_query()`'s stopword-only
+pass correctly keeps "Nothing Technology" verbatim in every question (e.g.
+q4 derives to `Nothing Technology directors according set accounts FY2021
+FY2023`), but `derive_discriminative_query()` drops both words from every
+single question, because "nothing" is an ordinary English word that
+recurs across the corpus regardless of company -- it has a corpus-wide
+document frequency of 246 out of 588 persisted pages (confirmed directly
+against the database, not assumed), the highest of any term checked,
+because Gymshark's own filings use the word "nothing" in ordinary prose
+(e.g. auditor boilerplate: "we have nothing to report in this regard").
+Document-frequency-based selection has no way to distinguish "rare
+because it's this company's own name" from "common because it's an
+everyday word that happens to double as this company's name" -- a
+different blind spot than Gymshark's "common because it's repeated
+company-identifying boilerplate within its own filings" one, but the same
+underlying limitation: page-level document frequency is a proxy for
+discriminative power, not the thing itself, and it fails in different,
+company-specific ways depending on what makes a term rare or common for
+that specific corpus. Despite dropping the company name, both strategies
+still score better here than on Gymshark overall, most visibly on
+q6-going-concern-fy2023 (`derived-idf` scores this question a clean
+1.00/1.00, because "going concern" remains genuinely rare in this smaller,
+mixed-document-type corpus) -- consistent with the existing, evidenced
+account of *why* IDF-based selection sometimes works (rare accounting
+disclosures) and sometimes doesn't (terms that are common for reasons
+IDF can't see), now shown on a second, independently measured corpus
+rather than asserted to generalize from one.
 
 ## Run the investigation agent
 

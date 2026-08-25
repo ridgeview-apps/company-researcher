@@ -54,6 +54,10 @@ TEST_COMPANY_NUMBER = "TE000007"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GYMSHARK_DATASET_PATH = REPO_ROOT / "evaluation" / "gymshark_retrieval_questions.json"
 GYMSHARK_COMPANY_NUMBER = "08130873"
+NOTHING_TECHNOLOGY_DATASET_PATH = (
+    REPO_ROOT / "evaluation" / "nothing_technology_retrieval_questions.json"
+)
+NOTHING_TECHNOLOGY_COMPANY_NUMBER = "12984564"
 
 
 @pytest_asyncio.fixture
@@ -451,6 +455,35 @@ def test_load_evaluation_dataset_parses_gymshark_fixture() -> None:
 async def test_run_evaluation_resolves_the_gymshark_fixture_against_real_data() -> None:
     """Guard against the labelled dataset drifting from the persisted corpus."""
     dataset = load_evaluation_dataset(GYMSHARK_DATASET_PATH)
+    engine = create_database_engine(Settings(_env_file=None))  # type: ignore[call-arg]
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_factory() as session:
+            summary = await run_evaluation(session, dataset)
+    finally:
+        await engine.dispose()
+
+    assert len(summary.per_question) == len(dataset.questions)
+    for metrics in summary.per_question:
+        for recall in metrics.recall_at_k.values():
+            assert 0.0 <= recall <= 1.0
+        assert 0.0 <= metrics.reciprocal_rank <= 1.0
+
+
+def test_load_evaluation_dataset_parses_nothing_technology_fixture() -> None:
+    dataset = load_evaluation_dataset(NOTHING_TECHNOLOGY_DATASET_PATH)
+
+    assert dataset.company_number == NOTHING_TECHNOLOGY_COMPANY_NUMBER
+    assert len(dataset.questions) == 6
+    assert all(question.relevant_pages for question in dataset.questions)
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_resolves_the_nothing_technology_fixture_against_real_data() -> (
+    None
+):
+    """Guard against the labelled dataset drifting from the persisted corpus."""
+    dataset = load_evaluation_dataset(NOTHING_TECHNOLOGY_DATASET_PATH)
     engine = create_database_engine(Settings(_env_file=None))  # type: ignore[call-arg]
     session_factory = create_session_factory(engine)
     try:

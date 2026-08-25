@@ -402,9 +402,51 @@ correct rather than a bug, since that strategy's document-frequency
 statistics are explicitly computed corpus-wide and Nothing Technology's
 350 pages are now part of that corpus. See README.md's "Scoping
 retrieval to one company" section for the full detail and updated
-tables. Evaluation-dataset construction for Nothing Technology and the
-agent-vs-general-LLM baseline comparison remain separate, not-yet-started
-work.
+tables.
+
+A hand-labelled retrieval evaluation dataset for Nothing Technology is
+now built and measured too — `evaluation/nothing_technology_retrieval_questions.json`,
+built with the identical methodology as Gymshark's dataset (relevant
+pages identified by reading real persisted OCR text, hand-tuned queries
+measured against the real corpus, same hand-tuning caveat). Six
+questions, three of which (charges, a December 2024 facility, going
+concern) span both accounts and the six registered-charge (`MR01`)
+filings — chosen because Nothing Technology's charges split into two
+batches naming different security agents (Banco Santander, S.A. for
+three charges created 18 December 2024; Ocean II PLO LLC for three more
+created 1 July 2026), a real, filing-established fact matching the
+project brief's "financing-related investigation, distinguishing
+evidence from speculation" framing for this company. Measured hand-tuned
+result: Mean Recall@5 = 0.778, Recall@10 = 0.917, MRR = 1.000 — stronger
+than Gymshark's own hand-tuned baseline, attributed to this specific
+6-question set (its charges question matches six near-identically
+formatted MR01 summary pages cleanly) rather than asserted as evidence
+lexical search performs better on this company's filings generally. The
+deterministic `derived` and `derived-idf` strategies were also re-run
+against this dataset and scored meaningfully better here than on
+Gymshark (derived: 0.278/0.417/0.230 vs 0.000/0.000/0.030;
+derived-idf: 0.250/0.306/0.193 vs 0.083/0.250/0.130) — investigated
+rather than left unexplained: inspecting the actual derived queries
+showed `derive_discriminative_query()` drops "Nothing"/"Technology" from
+every question because "nothing" is an ordinary English word with the
+highest corpus-wide document frequency of any term checked (246/588
+pages, confirmed directly against the database), including appearing in
+Gymshark's own auditor boilerplate ("we have nothing to report") — a
+different blind spot than the boilerplate-repetition one diagnosed on
+Gymshark (there, a term was common because it recurred within one
+company's own filings; here, a term is common because it is ordinary
+English that happens to double as a company name), but the same
+underlying limitation: document frequency is a proxy for discriminative
+power, not the thing itself. See README.md's "Measure the second-company
+retrieval baseline: Nothing Technology" section for the full detail,
+tables, and worked example (q6-going-concern-fy2023, where derived-idf
+scores a clean 1.00/1.00 because "going concern" remains genuinely rare
+even in this smaller, mixed-document-type corpus). Two new tests
+(`test_load_evaluation_dataset_parses_nothing_technology_fixture`,
+`test_run_evaluation_resolves_the_nothing_technology_fixture_against_real_data`)
+mirror the existing Gymshark dataset tests. Evaluation-dataset
+construction for Nothing Technology is now done; the agent-vs-general-LLM
+baseline comparison remains separate, not-yet-started work.
 
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
