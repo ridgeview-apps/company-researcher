@@ -17,6 +17,7 @@ from company_researcher.db.models import (
     DocumentPage,
     Filing,
     FilingDocument,
+    HumanReview,
 )
 from company_researcher.db.session import create_database_engine, create_session_factory
 from company_researcher.investigation_agent import Citation, Finding
@@ -84,6 +85,11 @@ async def session() -> AsyncIterator[AsyncSession]:
             yield db_session
     finally:
         async with session_factory() as cleanup_session:
+            await cleanup_session.execute(
+                delete(HumanReview).where(
+                    HumanReview.company_number == TEST_COMPANY_NUMBER
+                )
+            )
             await cleanup_session.execute(
                 delete(Filing).where(Filing.company_number == TEST_COMPANY_NUMBER)
             )
@@ -214,6 +220,7 @@ async def test_compare_question_reports_both_findings_and_citation_realism(
     )
     specialized_finding = Finding(
         claim="November oscar papa was 42.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -225,6 +232,7 @@ async def test_compare_question_reports_both_findings_and_citation_realism(
     )
     baseline_finding = Finding(
         claim="November oscar papa was probably around 40.",
+        claim_type="fact",
         evidence_sufficient=False,
         citations=[
             Citation(
@@ -291,6 +299,7 @@ async def test_compare_question_catches_a_specialized_agent_citation_error(
     )
     hallucinated_specialized_finding = Finding(
         claim="Fabricated claim citing an unretrieved page.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -301,7 +310,7 @@ async def test_compare_question_catches_a_specialized_agent_citation_error(
         ],
     )
     baseline_finding = Finding(
-        claim="Unknown.", evidence_sufficient=False, citations=[]
+        claim="Unknown.", claim_type="fact", evidence_sufficient=False, citations=[]
     )
     chat_client = FakeComparisonChatClient(
         query="zqxvwkploqnhfbyt",

@@ -55,10 +55,14 @@ can:
   same labelled question sets, checking every baseline citation attempt
   against real persisted pages (see
   [Compare the specialized agent against a general-LLM baseline](#compare-the-specialized-agent-against-a-general-llm-baseline)
-  below).
+  below); and
+- pause a finding that is an interpretation, or that reports insufficient
+  evidence, for a human analyst to approve, edit, reject, or flag for
+  further research, with every decision persisted (see
+  [Human-in-the-loop review](#human-in-the-loop-review) below).
 
-Temporal analysis and human-in-the-loop workflows remain deliberately
-deferred until the relevant project phase.
+Temporal analysis remains deliberately deferred until the relevant project
+phase.
 
 ## Prerequisites
 
@@ -1613,6 +1617,123 @@ final verdict, and the brief's fuller comparison (a second, real-tool-
 using baseline, human-calibrated factual-accuracy scoring, temporal-
 leakage testing) remains open, deliberately unstarted work.
 
+## Human-in-the-loop review
+
+`docs/project-brief.md` asks the system to distinguish a directly
+evidenced fact from an interpretation that adds judgement beyond the
+evidence, and to let a weakly supported or consequential interpretation
+pause the workflow for a human analyst to approve, edit, reject, or
+request further research, with the decision stored. This is now built.
+
+`Finding` gained a required `claim_type: "fact" | "interpretation"`,
+self-classified by the LLM in the same structured-output call that
+already produces `claim`/`evidence_sufficient`/`citations` - updated in
+every prompt that produces a `Finding` (the single-question path, each
+per-year path, the multi-year aggregation, and the no-retrieval
+baseline). `human_review.py`'s `needs_human_review()` is a fully
+deterministic gate over two already-trusted signals: `claim_type ==
+"interpretation"` or `evidence_sufficient is False`. Deliberately no
+third, self-reported confidence axis - this project has already found
+LLM self-assessment on a comparably subtle axis (citation entailment)
+unreliable, see
+[A reverted attempt at citation entailment checking](#a-reverted-attempt-at-citation-entailment-checking)
+above.
+
+### Why this isn't a LangGraph checkpointed interrupt
+
+The review gate can only be evaluated *after* synthesis produces a
+finding - `claim_type` and `evidence_sufficient` don't exist before that
+- so there is no expensive downstream work a mid-graph suspend would
+save here, unlike a long-running agentic loop where interrupting before
+an expensive step matters. This was a deliberate, agreed design choice,
+not a corner cut: rather than adopt LangGraph's checkpointer and
+`interrupt()` machinery (a new dependency, its own schema-managed
+tables, thread-based suspend/resume), one new terminal node,
+`human_review_gate`, is wired from both `synthesize_finding` and
+`aggregate_findings` - covering the single-question and multi-year paths
+uniformly with no special-casing - and persists a `pending` row to a new
+`human_reviews` table (a new Alembic migration, following
+`DocumentExtraction`'s status/timestamp persistence convention)
+whenever `needs_human_review()` is true.
+
+A new `investigate_with_review()` function mirrors the existing
+`investigate_with_usage()` pattern, returning `(Finding, review_id |
+None)`; `investigate()` and `investigate_with_usage()` keep their exact
+existing signatures. One consequence worth stating plainly: because the
+gate lives inside the graph itself, both of those unchanged functions
+now also trigger this persistence side effect on every call, including
+from `baseline_comparison.py` and every existing test. That is
+deliberate - a real investigation needing review is a real investigation
+needing review regardless of which wrapper called it - not an
+accidental leak into unrelated call sites.
+
+### CLI surface
+
+```bash
+uv run company-researcher investigate "Does the evidence show governance instability?"
+```
+
+now reports `"status": "final"` or `"pending_review"` (with `review_id`
+and `review_reason`) instead of always presenting a claim as settled.
+Two new commands close the loop:
+
+```bash
+uv run company-researcher list-reviews --status pending
+uv run company-researcher review 27 --decision edit --edited-claim "..." --note "..."
+```
+
+`--decision` is one of `approve`, `edit`, `reject`, or
+`request-more-research`. Deciding an edit without `--edited-claim`
+raises an error, and re-deciding an already-decided review raises an
+error too - the same fail-closed discipline citation validation already
+applies, rather than silently overwriting a prior human decision.
+
+This first slice deliberately narrows scope in two places, agreed up
+front rather than discovered as gaps later: "edit" replaces only the
+claim text (not citations), and "request-more-research" only records the
+reviewer's note - it does not automatically re-run the graph with new
+guidance; a human re-runs `investigate` with a refined question
+separately.
+
+### Observed real-run result
+
+Verified with a new `test_human_review.py` (11 tests covering the gate
+logic and decision persistence) plus 6 more tests added to
+`test_investigation_agent.py` and `test_cli.py`, all against real
+Postgres, then with several real runs against the real LLM and the
+persisted Gymshark corpus:
+
+- A serious-financial-distress question ("does this pattern indicate the
+  business faced serious financial distress in FY2022?") correctly
+  returned `evidence_sufficient=false` and paused with
+  `review_reason="evidence_sufficient=false"`.
+- A board-turnover question ("does this level of turnover in the
+  boardroom suggest governance instability?") correctly returned
+  `claim_type="interpretation"` (the model's own claim actually argued
+  the opposite conclusion - that the turnover indicated stability - which
+  is exactly the kind of judgement-beyond-the-evidence this gate is
+  meant to flag regardless of which direction it argues) and paused with
+  both triggers firing at once:
+  `review_reason="claim_type=interpretation, evidence_sufficient=false"`.
+- Against those real pending reviews, `list-reviews`, `review --decision
+  approve`, and `review --decision edit --edited-claim ...` all behaved
+  as designed, and attempting to re-decide the already-approved review
+  correctly failed with a non-zero exit code rather than silently
+  overwriting it.
+- The default (no-argument) Gymshark going-concern question was re-run
+  and still reports `"status": "final"` with `"claim_type": "fact"` -
+  confirming the new gate does not change behavior for a well-evidenced
+  factual claim, the large majority of this project's existing
+  real-run history.
+
+Deliberately out of scope for this slice, flagged rather than silently
+skipped: an automatic request-more-research loop back into the graph,
+editing a finding's citations rather than just its claim text, a
+"significance" axis distinct from interpretation/insufficiency, and any
+analyst-facing UI beyond this CLI (the project brief's own TypeScript
+review-interface idea, explicitly gated on the backend workflow existing
+first and serving a real need).
+
 ## Quality checks
 
 Most of this project's tests exercise a real local PostgreSQL instance (the
@@ -1672,7 +1793,7 @@ uv run ruff format .
 │   ├── artifact_store.py               # Content-addressed source artifacts
 │   ├── baseline_agent.py               # No-retrieval general-LLM baseline
 │   ├── baseline_comparison.py          # Baseline-vs-specialized-agent comparison
-│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, investigation, and comparison CLI
+│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, investigation, review, and comparison CLI
 │   ├── config.py                       # Environment-backed settings
 │   ├── discriminative_query.py         # Corpus document-frequency query ranking
 │   ├── document_ingestion.py           # Filing-document acquisition and persistence
@@ -1681,6 +1802,7 @@ uv run ruff format .
 │   ├── extraction_persistence.py       # Idempotent page-extraction persistence
 │   ├── fiscal_year_extraction.py       # Deterministic fiscal-year extraction from question text
 │   ├── fiscal_year_lookup.py           # Filing lookup by accounting period (made_up_date)
+│   ├── human_review.py                 # Human-in-the-loop review gate and decision persistence
 │   ├── hybrid_search.py                # Reciprocal Rank Fusion of lexical and vector rankings
 │   ├── ingestion.py                    # Idempotent persistence of source data
 │   ├── investigation_agent.py          # LangGraph investigation agent and citation validation

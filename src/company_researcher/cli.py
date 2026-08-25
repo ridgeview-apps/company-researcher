@@ -28,6 +28,7 @@ from company_researcher.db.models import (
     DocumentExtraction,
     Filing,
     FilingDocument,
+    HumanReview,
 )
 from company_researcher.db.session import create_database_engine, create_session_factory
 from company_researcher.document_ingestion import (
@@ -37,8 +38,17 @@ from company_researcher.document_ingestion import (
 from company_researcher.embedding_persistence import embed_document_extraction
 from company_researcher.embeddings_client import EmbeddingsClient, EmbeddingsError
 from company_researcher.extraction_persistence import extract_filing_document
+from company_researcher.human_review import (
+    HumanReviewError,
+    ReviewDecision,
+    apply_review_decision,
+    review_reason,
+)
 from company_researcher.ingestion import ingest_company
-from company_researcher.investigation_agent import InvestigationAgentError, investigate
+from company_researcher.investigation_agent import (
+    InvestigationAgentError,
+    investigate_with_review,
+)
 from company_researcher.llm_client import ChatClient, ChatError
 from company_researcher.pdf_extraction import PdfExtractionError, TesseractPdfExtractor
 from company_researcher.retrieval_evaluation import (
@@ -190,6 +200,56 @@ def build_parser() -> argparse.ArgumentParser:
             "Companies House company number to scope retrieval to "
             f"(default: {DEFAULT_INVESTIGATION_COMPANY_NUMBER}, Gymshark Ltd)."
         ),
+    )
+
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Record a human decision on a pending investigation review.",
+    )
+    review_parser.add_argument(
+        "review_id",
+        type=int,
+        help="ID of a pending human review (see list-reviews).",
+    )
+    review_parser.add_argument(
+        "--decision",
+        required=True,
+        choices=["approve", "edit", "reject", "request-more-research"],
+        help=(
+            "'approve' accepts the claim as-is. 'edit' replaces the claim "
+            "text with --edited-claim. 'reject' marks the claim as not to "
+            "be served. 'request-more-research' records the reviewer's "
+            "note without re-running the investigation - re-run investigate "
+            "with a refined question separately."
+        ),
+    )
+    review_parser.add_argument(
+        "--edited-claim",
+        default=None,
+        help="Replacement claim text, required when --decision edit.",
+    )
+    review_parser.add_argument(
+        "--note", default=None, help="Optional free-text note from the reviewer."
+    )
+    review_parser.add_argument(
+        "--reviewer", default=None, help="Optional reviewer name or identifier."
+    )
+
+    list_reviews_parser = subparsers.add_parser(
+        "list-reviews",
+        help="List persisted human reviews, optionally filtered by status.",
+    )
+    list_reviews_parser.add_argument(
+        "--status",
+        choices=[
+            "pending",
+            "approved",
+            "edited",
+            "rejected",
+            "more_research_requested",
+        ],
+        default=None,
+        help="Only list reviews with this status (default: all).",
     )
 
     comparison_parser = subparsers.add_parser(
@@ -446,32 +506,133 @@ def run_retrieval_evaluation(
 
 
 async def investigate_command(question: str, company_number: str) -> str:
-    """Run the investigation agent for one question and serialize its finding."""
+    """Run the investigation agent for one question and serialize its finding.
+
+    A finding whose claim is an interpretation, or whose evidence is
+    insufficient, is not presented as settled: `status` is "pending_review"
+    and the finding is also persisted as a `human_reviews` row (see
+    `investigate_with_review`) for a human analyst to resolve with the
+    `review` command, rather than served as a final answer.
+    """
     settings = Settings()
     engine = create_database_engine(settings)
     try:
         session_factory = create_session_factory(engine)
         async with session_factory() as session:
             async with ChatClient.from_settings(settings) as chat_client:
-                finding = await investigate(
+                finding, review_id = await investigate_with_review(
                     session, chat_client, question, company_number
                 )
     finally:
         await engine.dispose()
 
-    payload = {
+    payload: dict[str, object] = {
         "question": question,
         "company_number": company_number,
+        "status": "pending_review" if review_id is not None else "final",
         "claim": finding.claim,
+        "claim_type": finding.claim_type,
         "evidence_sufficient": finding.evidence_sufficient,
         "citations": [citation.model_dump() for citation in finding.citations],
     }
+    if review_id is not None:
+        payload["review_id"] = review_id
+        payload["review_reason"] = review_reason(
+            claim_type=finding.claim_type,
+            evidence_sufficient=finding.evidence_sufficient,
+        )
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
 def run_investigation(question: str, company_number: str) -> str:
     """Run one investigation from the synchronous CLI."""
     return asyncio.run(investigate_command(question, company_number))
+
+
+_REVIEW_DECISIONS: dict[str, ReviewDecision] = {
+    "approve": "approved",
+    "edit": "edited",
+    "reject": "rejected",
+    "request-more-research": "more_research_requested",
+}
+
+
+async def review_command(
+    review_id: int,
+    decision: str,
+    edited_claim: str | None,
+    note: str | None,
+    reviewer: str | None,
+) -> str:
+    """Record a human analyst's decision against one pending review."""
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            result = await apply_review_decision(
+                session,
+                review_id,
+                _REVIEW_DECISIONS[decision],
+                edited_claim=edited_claim,
+                note=note,
+                reviewer=reviewer,
+            )
+    finally:
+        await engine.dispose()
+
+    payload = {
+        "review_id": result.review_id,
+        "status": result.status,
+        "claim": result.claim,
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def run_review(
+    review_id: int,
+    decision: str,
+    edited_claim: str | None,
+    note: str | None,
+    reviewer: str | None,
+) -> str:
+    """Run one review decision from the synchronous CLI."""
+    return asyncio.run(
+        review_command(review_id, decision, edited_claim, note, reviewer)
+    )
+
+
+async def list_reviews_command(status: str | None) -> str:
+    """List persisted human reviews, optionally filtered by status."""
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            statement = select(HumanReview).order_by(HumanReview.created_at)
+            if status is not None:
+                statement = statement.where(HumanReview.status == status)
+            reviews = (await session.scalars(statement)).all()
+    finally:
+        await engine.dispose()
+
+    if not reviews:
+        return "No human reviews found."
+
+    lines = []
+    for review in reviews:
+        lines.append(
+            f"{review.id}: [{review.status}] company={review.company_number} "
+            f"claim_type={review.claim_type} reason={review.review_reason}"
+        )
+        lines.append(f"    question: {review.question}")
+        lines.append(f"    claim: {review.claim}")
+    return "\n".join(lines)
+
+
+def run_list_reviews(status: str | None) -> str:
+    """List human reviews from the synchronous CLI."""
+    return asyncio.run(list_reviews_command(status))
 
 
 def _format_comparison_report(comparisons: list[QuestionComparison]) -> str:
@@ -565,6 +726,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = run_ingestion(args.company_number)
         elif args.command == "investigate":
             output = run_investigation(args.question, args.company_number)
+        elif args.command == "review":
+            output = run_review(
+                args.review_id,
+                args.decision,
+                args.edited_claim,
+                args.note,
+                args.reviewer,
+            )
+        elif args.command == "list-reviews":
+            output = run_list_reviews(args.status)
         elif args.command == "compare-baseline":
             output = run_baseline_comparison(args.dataset_path)
         else:
@@ -602,6 +773,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except (InvestigationAgentError, ChatError) as error:
         print(f"Investigation error: {error}", file=sys.stderr)
+        return 1
+    except HumanReviewError as error:
+        print(f"Human review error: {error}", file=sys.stderr)
         return 1
 
     print(output)

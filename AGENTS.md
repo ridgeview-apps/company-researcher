@@ -590,6 +590,77 @@ substitute for the brief's fuller comparison (a real second baseline,
 human-calibrated factual-accuracy scoring, temporal-leakage testing),
 which remains separate, deliberately unstarted work.
 
+A human-in-the-loop (HITL) review milestone is now built and verified
+against the real LLM and the persisted Gymshark corpus, the explicitly
+agreed next step after the baseline-comparison slice above. `Finding`
+gained a required `claim_type: Literal["fact", "interpretation"]` field,
+self-classified by the LLM in the same structured-output call that already
+produces `claim`/`evidence_sufficient`/`citations` - updated in all three
+synthesis prompts (single-question, per-year, aggregate) plus
+`baseline_agent.py`'s, since all four produce `Finding`. `human_review.py`
+adds `needs_human_review()`, a fully deterministic gate over two
+already-trusted signals (`claim_type == "interpretation"` or
+`evidence_sufficient is False`) - deliberately not a third self-reported
+confidence axis, since this project has already found LLM self-assessment
+on a comparably subtle axis unreliable (see "A reverted attempt at
+citation entailment checking" above).
+
+The graph itself pauses only in the sense of not treating a flagged
+finding as final - not via LangGraph's checkpointer/`interrupt()`
+machinery. That was a deliberate, agreed choice, not a corner cut: the
+review gate can only be evaluated *after* synthesis produces a finding
+(claim_type/evidence_sufficient don't exist before that), so there is no
+expensive downstream work a mid-graph suspend would save here, unlike a
+long-running agentic loop where interrupting before an expensive step
+matters. Instead, one new terminal node, `human_review_gate` - wired from
+both `synthesize_finding` and `aggregate_findings`, so it covers the
+single-question and multi-year paths uniformly with no special-casing -
+persists a `pending` row to a new `human_reviews` table (via a new
+Alembic migration, following `DocumentExtraction`'s status/timestamp
+persistence convention) whenever `needs_human_review()` is true. A new
+`investigate_with_review()` function (mirroring the existing
+`investigate_with_usage()` pattern) returns `(Finding, review_id | None)`;
+`investigate()` and `investigate_with_usage()` are otherwise unchanged in
+signature, though both now also trigger this same graph-embedded
+persistence side effect on every call, including from
+`baseline_comparison.py` and every existing test - a deliberate
+consequence, not an oversight, since the review gate is a property of the
+investigation itself, not of which wrapper function happened to call it.
+
+`company-researcher investigate`'s output now reports `"status": "final"`
+or `"pending_review"` (with `review_id` and `review_reason`) instead of
+always presenting a claim as settled. Two new CLI commands close the
+loop: `review <review_id> --decision {approve,edit,reject,
+request-more-research}` records a human decision (fail-closed against
+re-deciding an already-decided review, the same discipline citation
+validation already uses), and `list-reviews [--status ...]` lists
+persisted reviews. This first slice deliberately narrows "edit" to
+replacing the claim text only (not citations) and "request-more-research"
+to recording the reviewer's intent without an automatic requery loop - a
+human re-runs `investigate` with a refined question separately. Both were
+explicit, agreed scope decisions, not gaps discovered later.
+
+Verified with a new `test_human_review.py` (11 tests) plus additions to
+`test_investigation_agent.py` and `test_cli.py` (6 more) against real
+Postgres, then with several
+real runs against the real LLM and the persisted Gymshark corpus: a
+serious-financial-distress question correctly paused on
+`evidence_sufficient=false`; a governance-turnover question correctly
+paused on `claim_type=interpretation` (and, in that run, both triggers
+fired together); `list-reviews`, `review --decision approve`, and
+`review --decision edit --edited-claim ...` all behaved as designed
+against those real pending reviews, and re-deciding an already-approved
+review correctly failed closed. A default (no-argument) Gymshark
+going-concern run was re-verified to still report `"status": "final"`
+with `claim_type=fact`, confirming the new gate does not change behavior
+for a well-evidenced factual claim. Deliberately out of scope for this
+slice, flagged rather than silently skipped: an automatic
+request-more-research loop back into the graph, editing a finding's
+citations (not just its claim text), a "significance" axis distinct from
+interpretation/insufficiency, and any analyst-facing UI beyond this CLI
+(the project brief's own TypeScript review-interface idea, explicitly
+gated on the backend workflow existing first).
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or

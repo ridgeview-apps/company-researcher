@@ -1,6 +1,6 @@
 import re
 from collections.abc import Sequence
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -13,6 +13,7 @@ from company_researcher.fiscal_year_extraction import extract_fiscal_years
 from company_researcher.fiscal_year_lookup import (
     document_extraction_ids_for_fiscal_year,
 )
+from company_researcher.human_review import needs_human_review, record_pending_review
 from company_researcher.lexical_search import PageMatch, search_pages
 from company_researcher.llm_client import ChatMessage, ChatUsage, UsageAwareChatProvider
 
@@ -29,6 +30,17 @@ _QUERY_SYSTEM_PROMPT = (
     "write fiscal years as plain numbers (e.g. '2023'), never with an 'FY' "
     "prefix, so use plain years too. Respond with only the query text: no "
     "punctuation, quotes, or explanation."
+)
+
+_CLAIM_TYPE_INSTRUCTION = (
+    "Every answer must also be classified with claim_type, either 'fact' or "
+    "'interpretation'. Use 'fact' when the claim states only what the "
+    "evidence directly says (e.g. 'three directors resigned within 14 "
+    "months'). Use 'interpretation' when the claim adds a judgement that "
+    "goes beyond what the evidence directly states (e.g. 'this indicates "
+    "governance instability') - even if that judgement seems reasonable. "
+    "An interpretation is not wrong to offer, but must always be labelled "
+    "as one rather than presented as a directly evidenced fact."
 )
 
 _FINDING_SYSTEM_PROMPT = (
@@ -49,7 +61,7 @@ _FINDING_SYSTEM_PROMPT = (
     "When the question asks what a specific party stated or identified, "
     "rely only on that party's own words; do not attribute the auditor's "
     "opinion or wording to the directors, or vice versa, even where both "
-    "discuss the same topic."
+    "discuss the same topic. " + _CLAIM_TYPE_INSTRUCTION
 )
 
 _AGGREGATE_SYSTEM_PROMPT = (
@@ -64,7 +76,8 @@ _AGGREGATE_SYSTEM_PROMPT = (
     "supporting_text) from the citations listed below for the relevant "
     "year - do not invent a new citation or alter any of its fields. If "
     "none of the per-year findings provide enough evidence to support a "
-    "comparison, set evidence_sufficient to false and say so."
+    "comparison, set evidence_sufficient to false and say so. "
+    + _CLAIM_TYPE_INSTRUCTION
 )
 
 
@@ -138,6 +151,7 @@ class Finding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     claim: str
+    claim_type: Literal["fact", "interpretation"]
     evidence_sufficient: bool
     citations: list[Citation]
 
@@ -168,6 +182,7 @@ class InvestigationState(TypedDict, total=False):
     retrieved_pages: list[RetrievedPage]
     year_evidence: list[YearEvidence]
     finding: Finding
+    review_id: int | None
     usage_records: list[ChatUsage]
 
 
@@ -555,12 +570,32 @@ def _build_graph(
             "usage_records": state.get("usage_records", []) + usage_records,
         }
 
+    async def human_review_gate_node(state: InvestigationState) -> InvestigationState:
+        finding = state["finding"]
+        if not needs_human_review(
+            claim_type=finding.claim_type,
+            evidence_sufficient=finding.evidence_sufficient,
+        ):
+            return {"review_id": None}
+        review_id = await record_pending_review(
+            session,
+            company_number=state["company_number"],
+            question=state["question"],
+            generated_query=state["generated_query"],
+            claim=finding.claim,
+            claim_type=finding.claim_type,
+            evidence_sufficient=finding.evidence_sufficient,
+            citations=[citation.model_dump() for citation in finding.citations],
+        )
+        return {"review_id": review_id}
+
     graph = StateGraph(InvestigationState)
     graph.add_node("generate_query", generate_query_node)
     graph.add_node("retrieve_evidence", retrieve_evidence_node)
     graph.add_node("synthesize_finding", synthesize_finding_node)
     graph.add_node("gather_year_findings", gather_year_findings_node)
     graph.add_node("aggregate_findings", aggregate_findings_node)
+    graph.add_node("human_review_gate", human_review_gate_node)
     graph.add_edge(START, "generate_query")
     graph.add_conditional_edges(
         "generate_query",
@@ -571,9 +606,10 @@ def _build_graph(
         },
     )
     graph.add_edge("retrieve_evidence", "synthesize_finding")
-    graph.add_edge("synthesize_finding", END)
+    graph.add_edge("synthesize_finding", "human_review_gate")
     graph.add_edge("gather_year_findings", "aggregate_findings")
-    graph.add_edge("aggregate_findings", END)
+    graph.add_edge("aggregate_findings", "human_review_gate")
+    graph.add_edge("human_review_gate", END)
     return graph.compile()
 
 
@@ -634,6 +670,38 @@ async def investigate(
         context_pages=context_pages,
     )
     return result["finding"]
+
+
+async def investigate_with_review(
+    session: AsyncSession,
+    chat_client: UsageAwareChatProvider,
+    question: str,
+    company_number: str,
+    *,
+    search_depth: int = DEFAULT_SEARCH_DEPTH,
+    context_pages: int = DEFAULT_CONTEXT_PAGES,
+) -> tuple[Finding, int | None]:
+    """Run one investigation and also return a pending human review ID, if one was raised.
+
+    A separate function from `investigate`, following the same pattern
+    `investigate_with_usage` already established, so every existing caller
+    (the CLI's `investigate` command previously, and every test calling
+    `investigate` directly) is unaffected by this addition to the return
+    contract. The `human_review_gate` node inside the graph itself decides
+    whether a review was needed and persists it if so (see
+    `human_review.needs_human_review`); this function only reads that
+    decision back out of the final graph state. A `None` review_id means
+    the finding was a sufficiently evidenced fact and needs no review.
+    """
+    result = await _run_graph(
+        session,
+        chat_client,
+        question,
+        company_number,
+        search_depth=search_depth,
+        context_pages=context_pages,
+    )
+    return result["finding"], result.get("review_id")
 
 
 async def investigate_with_usage(

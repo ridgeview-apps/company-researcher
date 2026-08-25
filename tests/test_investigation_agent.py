@@ -15,6 +15,7 @@ from company_researcher.db.models import (
     DocumentPage,
     Filing,
     FilingDocument,
+    HumanReview,
 )
 from company_researcher.db.session import create_database_engine, create_session_factory
 from company_researcher.investigation_agent import (
@@ -24,6 +25,7 @@ from company_researcher.investigation_agent import (
     _force_unambiguous_fiscal_year,
     _normalize_for_quote_check,
     investigate,
+    investigate_with_review,
     investigate_with_usage,
 )
 from company_researcher.llm_client import ChatMessage, ChatUsage
@@ -217,6 +219,11 @@ async def session() -> AsyncIterator[AsyncSession]:
     finally:
         async with session_factory() as cleanup_session:
             await cleanup_session.execute(
+                delete(HumanReview).where(
+                    HumanReview.company_number == TEST_COMPANY_NUMBER
+                )
+            )
+            await cleanup_session.execute(
                 delete(Filing).where(Filing.company_number == TEST_COMPANY_NUMBER)
             )
             await cleanup_session.execute(
@@ -327,6 +334,7 @@ async def test_investigate_returns_a_citation_grounded_finding(
     )
     expected_finding = Finding(
         claim="Alpha bravo charlie relied on a delta echo foxtrot.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -370,6 +378,7 @@ async def test_investigate_rejects_a_finding_that_cites_unretrieved_evidence(
     )
     hallucinated_finding = Finding(
         claim="Fabricated claim citing a page never retrieved.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -398,6 +407,7 @@ async def test_investigate_reports_insufficient_evidence_when_nothing_is_retriev
 ) -> None:
     insufficient_finding = Finding(
         claim="The retrieved evidence does not address this question.",
+        claim_type="fact",
         evidence_sufficient=False,
         citations=[],
     )
@@ -445,6 +455,7 @@ async def test_investigate_disambiguates_near_duplicate_pages_by_forced_year(
     )
     expected_finding = Finding(
         claim="Quebec romeo sierra tango whiskey xray, per the 2023 filing.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -497,6 +508,7 @@ async def test_investigate_excludes_a_different_fiscal_years_filing_entirely(
     )
     hallucinated_finding = Finding(
         claim="Fabricated claim citing the wrong fiscal year's filing.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -522,6 +534,7 @@ async def test_investigate_excludes_a_different_fiscal_years_filing_entirely(
     # The correct FY2023 filing's page must still be reachable.
     correct_finding = Finding(
         claim="Yankee zulu alpha beta gamma, per the 2023 filing.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -570,6 +583,7 @@ async def test_investigate_falls_back_to_unrestricted_search_when_named_year_mat
     )
     expected_finding = Finding(
         claim="Tango uniform victor whiskey was disclosed in December 2024.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -640,21 +654,25 @@ async def test_investigate_decomposes_a_multi_year_question_into_one_pass_per_ye
     )
     finding_2021 = Finding(
         claim="Cobalt zenith mosaic tundra figure was 100 in 2021.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[citation_2021],
     )
     finding_2022 = Finding(
         claim="Cobalt zenith mosaic tundra figure was 200 in 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[citation_2022],
     )
     finding_2023 = Finding(
         claim="Cobalt zenith mosaic tundra figure was 300 in 2023.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[citation_2023],
     )
     aggregate_finding = Finding(
         claim="Cobalt zenith mosaic tundra rose from 100 in 2021 to 300 in 2023, via 200 in 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[citation_2021, citation_2022, citation_2023],
     )
@@ -729,16 +747,19 @@ async def test_investigate_multi_year_gap_year_with_no_filing_still_gets_its_own
     )
     finding_2021 = Finding(
         claim="Prairie glacier quartz reading was 50 in 2021.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[citation_2021],
     )
     finding_2022 = Finding(
         claim="No evidence of a 2022 prairie glacier quartz reading was found.",
+        claim_type="fact",
         evidence_sufficient=False,
         citations=[],
     )
     finding_2023 = Finding(
         claim="Prairie glacier quartz reading was 70 in 2023.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[citation_2023],
     )
@@ -747,6 +768,7 @@ async def test_investigate_multi_year_gap_year_with_no_filing_still_gets_its_own
             "Prairie glacier quartz reading rose from 50 in 2021 to 70 in 2023; "
             "no 2022 filing was found."
         ),
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[citation_2021, citation_2023],
     )
@@ -792,6 +814,7 @@ async def test_investigate_multi_year_rejects_a_sub_finding_that_cites_another_y
 
     leaking_finding_2021 = Finding(
         claim="Fabricated claim citing the wrong year's page.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -803,6 +826,7 @@ async def test_investigate_multi_year_rejects_a_sub_finding_that_cites_another_y
     )
     finding_2022 = Finding(
         claim="Marble copper vertex disclosure for 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -816,7 +840,12 @@ async def test_investigate_multi_year_rejects_a_sub_finding_that_cites_another_y
         query="marble copper vertex",
         finding_selector=_finding_selector_by_year(
             {"2021": leaking_finding_2021, "2022": finding_2022},
-            Finding(claim="unused", evidence_sufficient=True, citations=[]),
+            Finding(
+                claim="unused",
+                claim_type="fact",
+                evidence_sufficient=True,
+                citations=[],
+            ),
         ),
     )
 
@@ -850,6 +879,7 @@ async def test_investigate_multi_year_rejects_an_aggregate_citation_not_drawn_fr
 
     finding_2021 = Finding(
         claim="Willow granite obsidian disclosure for 2021.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -861,6 +891,7 @@ async def test_investigate_multi_year_rejects_an_aggregate_citation_not_drawn_fr
     )
     finding_2022 = Finding(
         claim="Willow granite obsidian disclosure for 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -872,6 +903,7 @@ async def test_investigate_multi_year_rejects_an_aggregate_citation_not_drawn_fr
     )
     hallucinated_aggregate = Finding(
         claim="Fabricated comparison citing a page never retrieved in any year.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -910,6 +942,7 @@ async def test_investigate_self_corrects_a_fabricated_quote_on_retry(
     )
     fabricated_finding = Finding(
         claim="Amber lichen thistle figure was 42.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -921,6 +954,7 @@ async def test_investigate_self_corrects_a_fabricated_quote_on_retry(
     )
     corrected_finding = Finding(
         claim="Amber lichen thistle figure was 42.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -963,6 +997,7 @@ async def test_investigate_rejects_a_quote_still_fabricated_after_retry(
     )
     fabricated_finding = Finding(
         claim="Basil driftwood ember total was 17.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -974,6 +1009,7 @@ async def test_investigate_rejects_a_quote_still_fabricated_after_retry(
     )
     still_fabricated_finding = Finding(
         claim="Basil driftwood ember total was 17.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1020,6 +1056,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_quote_in_a_year
     )
     fabricated_2021 = Finding(
         claim="Cedar hollow mercury reading was 8 in 2021.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1031,6 +1068,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_quote_in_a_year
     )
     corrected_2021 = Finding(
         claim="Cedar hollow mercury reading was 8 in 2021.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1042,6 +1080,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_quote_in_a_year
     )
     finding_2022 = Finding(
         claim="Cedar hollow mercury reading was 9 in 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1053,6 +1092,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_quote_in_a_year
     )
     aggregate_finding = Finding(
         claim="Cedar hollow mercury reading rose from 8 in 2021 to 9 in 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             corrected_2021.citations[0],
@@ -1106,6 +1146,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_aggregate_quote
     )
     finding_2021 = Finding(
         claim="Fern quartz lantern count was 5 in 2021.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1117,6 +1158,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_aggregate_quote
     )
     finding_2022 = Finding(
         claim="Fern quartz lantern count was 6 in 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1128,6 +1170,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_aggregate_quote
     )
     fabricated_aggregate = Finding(
         claim="Fern quartz lantern count rose from 5 in 2021 to 6 in 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1139,6 +1182,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_aggregate_quote
     )
     corrected_aggregate = Finding(
         claim="Fern quartz lantern count rose from 5 in 2021 to 6 in 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[finding_2021.citations[0], finding_2022.citations[0]],
     )
@@ -1184,6 +1228,7 @@ async def test_investigate_tolerates_a_clean_quote_against_ocr_noisy_digit_separ
     )
     clean_quote_finding = Finding(
         claim="Hazel current turnover total was 437,629.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1220,6 +1265,7 @@ async def test_investigate_tolerates_a_clean_quote_against_ocr_mismatched_bracke
     )
     clean_quote_finding = Finding(
         claim="Ivory falcon meridian was appointed 9 January 2023.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1256,6 +1302,7 @@ async def test_investigate_still_rejects_a_genuinely_different_fabricated_number
     )
     fabricated_finding = Finding(
         claim="Juniper opal cascade total was 999.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1289,6 +1336,7 @@ async def test_investigate_with_usage_sums_query_and_synthesis_calls(
     )
     finding = Finding(
         claim="Foxtrot golf hotel figure disclosed.",
+        claim_type="fact",
         evidence_sufficient=False,
         citations=[],
     )
@@ -1313,7 +1361,9 @@ async def test_investigate_with_usage_sums_query_and_synthesis_calls(
 async def test_investigate_with_usage_returns_none_when_client_reports_none(
     session: AsyncSession, company: Company
 ) -> None:
-    finding = Finding(claim="Unknown.", evidence_sufficient=False, citations=[])
+    finding = Finding(
+        claim="Unknown.", claim_type="fact", evidence_sufficient=False, citations=[]
+    )
     chat_client = FakeChatClient(query="zqxvwkploqnhfbyt", finding=finding)
 
     _finding, usage = await investigate_with_usage(
@@ -1337,6 +1387,7 @@ async def test_investigate_with_usage_counts_a_self_correction_retry(
     )
     fabricated_finding = Finding(
         claim="Hotel india juliet figure was 7.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1348,6 +1399,7 @@ async def test_investigate_with_usage_counts_a_self_correction_retry(
     )
     corrected_finding = Finding(
         claim="Hotel india juliet figure was 7.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1396,6 +1448,7 @@ async def test_investigate_with_usage_sums_across_a_multi_year_question(
     )
     finding_2021 = Finding(
         claim="Kilo lima mike figure was 1 in 2021.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1407,6 +1460,7 @@ async def test_investigate_with_usage_sums_across_a_multi_year_question(
     )
     finding_2022 = Finding(
         claim="Kilo lima mike figure was 2 in 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(
@@ -1418,6 +1472,7 @@ async def test_investigate_with_usage_sums_across_a_multi_year_question(
     )
     aggregate_finding = Finding(
         claim="Kilo lima mike figure rose from 1 in 2021 to 2 in 2022.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[finding_2021.citations[0], finding_2022.citations[0]],
     )
@@ -1441,3 +1496,101 @@ async def test_investigate_with_usage_sums_across_a_multi_year_question(
     assert result_finding == aggregate_finding
     # generate_query + one synthesis per year (2) + the final aggregation.
     assert usage == ChatUsage(prompt_tokens=40, completion_tokens=20, total_tokens=60)
+
+
+@pytest.mark.asyncio
+async def test_investigate_with_review_does_not_flag_a_sufficient_fact(
+    session: AsyncSession, company: Company
+) -> None:
+    extraction = await _create_filing_with_pages(
+        session,
+        "investigation-review-fact",
+        ["Romeo sierra tango figure was 100."],
+    )
+    finding = Finding(
+        claim="Romeo sierra tango figure was 100.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="figure was 100",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(query="romeo sierra tango", finding=finding)
+
+    result_finding, review_id = await investigate_with_review(
+        session,
+        chat_client,
+        "What was the romeo sierra tango figure?",
+        company_number=TEST_COMPANY_NUMBER,
+    )
+
+    assert result_finding == finding
+    assert review_id is None
+
+
+@pytest.mark.asyncio
+async def test_investigate_with_review_flags_an_interpretation_for_review(
+    session: AsyncSession, company: Company
+) -> None:
+    extraction = await _create_filing_with_pages(
+        session,
+        "investigation-review-interpretation",
+        ["Uniform victor whiskey shows three resignations within 14 months."],
+    )
+    finding = Finding(
+        claim="This indicates governance instability.",
+        claim_type="interpretation",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="three resignations within 14 months",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(query="uniform victor whiskey", finding=finding)
+
+    result_finding, review_id = await investigate_with_review(
+        session,
+        chat_client,
+        "Does the evidence show governance instability?",
+        company_number=TEST_COMPANY_NUMBER,
+    )
+
+    assert result_finding == finding
+    assert review_id is not None
+    persisted = await session.get(HumanReview, review_id)
+    assert persisted is not None
+    assert persisted.status == "pending"
+    assert persisted.claim_type == "interpretation"
+    assert persisted.review_reason == "claim_type=interpretation"
+
+
+@pytest.mark.asyncio
+async def test_investigate_with_review_flags_insufficient_evidence_for_review(
+    session: AsyncSession, company: Company
+) -> None:
+    insufficient_finding = Finding(
+        claim="The retrieved evidence does not address this question.",
+        claim_type="fact",
+        evidence_sufficient=False,
+        citations=[],
+    )
+    chat_client = FakeChatClient(query="zqxvwkploqnhfbyt", finding=insufficient_finding)
+
+    _finding, review_id = await investigate_with_review(
+        session,
+        chat_client,
+        "What was the unrelated figure?",
+        company_number=TEST_COMPANY_NUMBER,
+    )
+
+    assert review_id is not None
+    persisted = await session.get(HumanReview, review_id)
+    assert persisted is not None
+    assert persisted.review_reason == "evidence_sufficient=false"

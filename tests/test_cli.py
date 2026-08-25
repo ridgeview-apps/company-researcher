@@ -277,10 +277,10 @@ def test_main_prints_investigation(
     assert captured.err == ""
 
 
-@pytest.mark.asyncio
-async def test_investigate_command_orchestrates_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _patch_investigate_dependencies(
+    monkeypatch: pytest.MonkeyPatch, run_agent: AsyncMock
+) -> tuple[MagicMock, object, MagicMock]:
+    """Wire cli.investigate_command's collaborators to fakes, returning session/chat_client/engine."""
     session = MagicMock()
     session_context = MagicMock()
     session_context.__aenter__ = AsyncMock(return_value=session)
@@ -292,14 +292,6 @@ async def test_investigate_command_orchestrates_agent(
     chat_client_context = MagicMock()
     chat_client_context.__aenter__ = AsyncMock(return_value=chat_client)
     chat_client_context.__aexit__ = AsyncMock(return_value=False)
-    finding = Finding(
-        claim="Evidence supports the conclusion.",
-        evidence_sufficient=True,
-        citations=[
-            Citation(document_extraction_id=7, page_number=29, supporting_text="quote")
-        ],
-    )
-    run_agent = AsyncMock(return_value=finding)
 
     monkeypatch.setattr(cli, "Settings", lambda: MagicMock())
     monkeypatch.setattr(cli, "create_database_engine", lambda settings: engine)
@@ -311,7 +303,27 @@ async def test_investigate_command_orchestrates_agent(
     fake_chat_client_cls = MagicMock()
     fake_chat_client_cls.from_settings = MagicMock(return_value=chat_client_context)
     monkeypatch.setattr(cli, "ChatClient", fake_chat_client_cls)
-    monkeypatch.setattr(cli, "investigate", run_agent)
+    monkeypatch.setattr(cli, "investigate_with_review", run_agent)
+
+    return session, chat_client, engine
+
+
+@pytest.mark.asyncio
+async def test_investigate_command_reports_a_final_finding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = Finding(
+        claim="Evidence supports the conclusion.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[
+            Citation(document_extraction_id=7, page_number=29, supporting_text="quote")
+        ],
+    )
+    run_agent = AsyncMock(return_value=(finding, None))
+    session, chat_client, engine = _patch_investigate_dependencies(
+        monkeypatch, run_agent
+    )
 
     output = await cli.investigate_command(
         "What is the going-concern position?", "08130873"
@@ -320,7 +332,9 @@ async def test_investigate_command_orchestrates_agent(
     assert json.loads(output) == {
         "question": "What is the going-concern position?",
         "company_number": "08130873",
+        "status": "final",
         "claim": "Evidence supports the conclusion.",
+        "claim_type": "fact",
         "evidence_sufficient": True,
         "citations": [
             {"document_extraction_id": 7, "page_number": 29, "supporting_text": "quote"}
@@ -328,6 +342,68 @@ async def test_investigate_command_orchestrates_agent(
     }
     run_agent.assert_awaited_once_with(
         session, chat_client, "What is the going-concern position?", "08130873"
+    )
+    engine.dispose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_investigate_command_reports_a_pending_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = Finding(
+        claim="This indicates governance instability.",
+        claim_type="interpretation",
+        evidence_sufficient=True,
+        citations=[],
+    )
+    run_agent = AsyncMock(return_value=(finding, 42))
+    _patch_investigate_dependencies(monkeypatch, run_agent)
+
+    output = await cli.investigate_command("Is governance stable?", "08130873")
+
+    payload = json.loads(output)
+    assert payload["status"] == "pending_review"
+    assert payload["review_id"] == 42
+    assert payload["review_reason"] == "claim_type=interpretation"
+    assert payload["claim_type"] == "interpretation"
+
+
+@pytest.mark.asyncio
+async def test_review_command_reports_an_applied_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = MagicMock()
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=False)
+    session_factory = MagicMock(return_value=session_context)
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+
+    monkeypatch.setattr(cli, "Settings", lambda: MagicMock())
+    monkeypatch.setattr(cli, "create_database_engine", lambda settings: engine)
+    monkeypatch.setattr(
+        cli, "create_session_factory", lambda configured_engine: session_factory
+    )
+
+    from company_researcher.human_review import ReviewDecisionResult
+
+    apply_decision = AsyncMock(
+        return_value=ReviewDecisionResult(
+            review_id=42, status="approved", claim="Evidence supports the conclusion."
+        )
+    )
+    monkeypatch.setattr(cli, "apply_review_decision", apply_decision)
+
+    output = await cli.review_command(42, "approve", None, "looks fine", "alex")
+
+    assert json.loads(output) == {
+        "review_id": 42,
+        "status": "approved",
+        "claim": "Evidence supports the conclusion.",
+    }
+    apply_decision.assert_awaited_once_with(
+        session, 42, "approved", edited_claim=None, note="looks fine", reviewer="alex"
     )
     engine.dispose.assert_awaited_once_with()
 

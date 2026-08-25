@@ -39,6 +39,7 @@ class FakeUsageAwareChatClient:
 async def test_answer_without_retrieval_returns_the_models_finding_and_usage() -> None:
     finding = Finding(
         claim="Acme Ltd reported strong growth in 2023.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[],
     )
@@ -57,7 +58,9 @@ async def test_answer_without_retrieval_returns_the_models_finding_and_usage() -
 async def test_answer_without_retrieval_includes_the_company_name_and_question() -> (
     None
 ):
-    finding = Finding(claim="Unknown.", evidence_sufficient=False, citations=[])
+    finding = Finding(
+        claim="Unknown.", claim_type="fact", evidence_sufficient=False, citations=[]
+    )
     chat_client = FakeUsageAwareChatClient(finding, usage=None)
 
     await answer_without_retrieval(chat_client, "What were the directors?", "Acme Ltd")
@@ -78,6 +81,7 @@ async def test_answer_without_retrieval_passes_through_an_attempted_citation() -
     """
     fabricated_finding = Finding(
         claim="Acme Ltd's revenue was 5m.",
+        claim_type="fact",
         evidence_sufficient=True,
         citations=[
             Citation(

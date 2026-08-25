@@ -290,6 +290,53 @@ class DocumentEmbedding(Base):
     )
 
 
+class HumanReview(Base):
+    """One human-in-the-loop review of an investigation finding.
+
+    Created by `investigation_agent.py`'s `human_review_gate` node whenever
+    a finding is an interpretation (rather than a directly evidenced fact)
+    or reports insufficient evidence, so a human analyst can approve, edit,
+    reject, or request further research before the finding is treated as
+    final. `citations` mirrors `raw_profile`/`raw_filing`'s JSONB provenance
+    convention rather than a normalized table, since a citation here is
+    already a closed, immutable snapshot of what the model cited at
+    synthesis time - not something later queries need to join against.
+    """
+
+    __tablename__ = "human_reviews"
+    __table_args__ = (
+        CheckConstraint(
+            "claim_type IN ('fact', 'interpretation')",
+            name="ck_human_reviews_claim_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'edited', 'rejected', "
+            "'more_research_requested')",
+            name="ck_human_reviews_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    company_number: Mapped[str] = mapped_column(
+        Text, ForeignKey("companies.company_number"), nullable=False, index=True
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_query: Mapped[str] = mapped_column(Text, nullable=False)
+    claim: Mapped[str] = mapped_column(Text, nullable=False)
+    claim_type: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_sufficient: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    review_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    edited_claim: Mapped[str | None] = mapped_column(Text)
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    reviewer: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class PageEmbedding(Base):
     """One page's embedding vector for a specific document embedding run."""
 

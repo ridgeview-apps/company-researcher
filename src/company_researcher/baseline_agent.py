@@ -11,7 +11,10 @@ _BASELINE_SYSTEM_PROMPT = (
     "your answer, you may cite it using its document_extraction_id and "
     "page_number, with an exact quote as supporting_text; otherwise leave "
     "citations empty rather than inventing one. Set evidence_sufficient to "
-    "false if you are not confident in your answer rather than guessing."
+    "false if you are not confident in your answer rather than guessing. "
+    "Classify your answer with claim_type, either 'fact' (states only what "
+    "you recall directly) or 'interpretation' (adds a judgement beyond "
+    "recalled facts)."
 )
 
 
