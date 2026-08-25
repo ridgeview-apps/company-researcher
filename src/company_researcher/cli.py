@@ -49,6 +49,11 @@ from company_researcher.investigation_agent import (
     InvestigationAgentError,
     investigate_with_review,
 )
+from company_researcher.judge_calibration import (
+    JudgeCalibrationError,
+    load_entailment_dataset,
+    run_calibration,
+)
 from company_researcher.llm_client import ChatClient, ChatError
 from company_researcher.pdf_extraction import PdfExtractionError, TesseractPdfExtractor
 from company_researcher.retrieval_evaluation import (
@@ -67,6 +72,7 @@ DEFAULT_INVESTIGATION_QUESTION = (
     "in the FY2023 accounts, and does the evidence support that?"
 )
 DEFAULT_INVESTIGATION_COMPANY_NUMBER = "08130873"
+DEFAULT_ENTAILMENT_DATASET = "evaluation/citation_entailment_judgments.json"
 
 
 class DocumentExtractionCommandError(Exception):
@@ -250,6 +256,21 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         default=None,
         help="Only list reviews with this status (default: all).",
+    )
+
+    calibration_parser = subparsers.add_parser(
+        "calibrate-judge",
+        help=(
+            "Measure an LLM judge's agreement with human labels on a "
+            "citation-entailment calibration dataset. Offline evaluation "
+            "only - does not affect investigate's live citation validation."
+        ),
+    )
+    calibration_parser.add_argument(
+        "dataset_path",
+        nargs="?",
+        default=DEFAULT_ENTAILMENT_DATASET,
+        help=f"Path to a calibration dataset (default: {DEFAULT_ENTAILMENT_DATASET}).",
     )
 
     comparison_parser = subparsers.add_parser(
@@ -635,6 +656,42 @@ def run_list_reviews(status: str | None) -> str:
     return asyncio.run(list_reviews_command(status))
 
 
+async def calibrate_judge_command(dataset_path: str) -> str:
+    """Measure the entailment judge's agreement with human labels on a calibration dataset."""
+    dataset = load_entailment_dataset(Path(dataset_path))
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            async with ChatClient.from_settings(settings) as chat_client:
+                summary = await run_calibration(session, chat_client, dataset)
+    finally:
+        await engine.dispose()
+
+    lines = []
+    for result in summary.per_example:
+        mark = "agree" if result.agrees else "DISAGREE"
+        lines.append(
+            f"{result.example_id}: human={result.human_verdict} "
+            f"judge={result.judge_verdict} [{mark}]"
+        )
+        lines.append(f"    judge reason: {result.judge_reason}")
+
+    lines.append(
+        f"Accuracy={summary.accuracy:.3f} "
+        f"Precision(unsupported)={summary.precision_unsupported:.3f} "
+        f"Recall(unsupported)={summary.recall_unsupported:.3f} "
+        f"F1(unsupported)={summary.f1_unsupported:.3f}"
+    )
+    return "\n".join(lines)
+
+
+def run_judge_calibration(dataset_path: str) -> str:
+    """Run one judge-calibration pass from the synchronous CLI."""
+    return asyncio.run(calibrate_judge_command(dataset_path))
+
+
 def _format_comparison_report(comparisons: list[QuestionComparison]) -> str:
     """Render a per-question baseline-vs-specialized report for manual review.
 
@@ -736,6 +793,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "list-reviews":
             output = run_list_reviews(args.status)
+        elif args.command == "calibrate-judge":
+            output = run_judge_calibration(args.dataset_path)
         elif args.command == "compare-baseline":
             output = run_baseline_comparison(args.dataset_path)
         else:
@@ -776,6 +835,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except HumanReviewError as error:
         print(f"Human review error: {error}", file=sys.stderr)
+        return 1
+    except JudgeCalibrationError as error:
+        print(f"Judge calibration error: {error}", file=sys.stderr)
         return 1
 
     print(output)

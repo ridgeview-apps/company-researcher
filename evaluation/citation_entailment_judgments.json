@@ -1,0 +1,136 @@
+{
+  "dataset": "gymshark_citation_entailment_v1",
+  "company_number": "08130873",
+  "company_name": "GYMSHARK LTD",
+  "methodology": "Every example's claim, supporting_text, and human_verdict were constructed by hand-reading the real, persisted OCR page text identified below - not invented - following the same methodology as the retrieval evaluation datasets. Several examples reconstruct real failure modes this project has already documented and diagnosed elsewhere (the FY2022 External D2C sales figure mis-cited as a full-year total; the FY2021 turnover arithmetic a prior, reverted judge design wrongly rejected; directors'-vs-auditor's-voice confusion), so this dataset directly tests whether a judge fixes the specific problems previously observed, not only whether it performs well in the abstract.",
+  "examples": [
+    {
+      "id": "e01-fy2023-turnover-total-supported",
+      "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4",
+      "page_number": 36,
+      "claim": "Gymshark's total turnover for the year ended 31 July 2023 was £403,818 thousand, up from £349,054 thousand in FY2022.",
+      "supporting_text": "403,818 349,054",
+      "human_verdict": "supported",
+      "human_reason": "The page's own Turnover note states these exact totals under columns headed '2023' and '2022' respectively."
+    },
+    {
+      "id": "e02-fy2022-d2c-component-cited-as-total-unsupported",
+      "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4",
+      "page_number": 36,
+      "claim": "Gymshark's total turnover for the year ended 31 July 2022 was £253,893 thousand.",
+      "supporting_text": "External D2C sales 288,452 253,893",
+      "human_verdict": "unsupported",
+      "human_reason": "253,893 is only the External D2C sales component of FY2022 turnover on this page; the same page states the FY2022 total as 349,054. This reconstructs a real, previously documented failure where a component figure was mis-cited as the full-year total."
+    },
+    {
+      "id": "e03-fy2021-turnover-arithmetic-supported",
+      "transaction_id": "MzMzOTgxMDE1NmFkaXF6a2N4",
+      "page_number": 28,
+      "claim": "Gymshark's total turnover for the year ended 31 July 2021 was £437,629 thousand, combining external sales of £398,627 thousand and intercompany sales of £39,002 thousand.",
+      "supporting_text": "External sales 398,627\nintercompany sales 39,002\n437,629",
+      "human_verdict": "supported",
+      "human_reason": "The page itself sums these two line items to 437,629 as its own total. This reconstructs the real case where this project's prior, reverted judge design wrongly flagged an equivalent citation as unsupported by second-guessing the filer's own arithmetic.",
+      "note": "supporting_text lightly normalizes OCR noise present on the real page ('437.629', '__260.674') the same way _normalize_for_quote_check already tolerates, so the judge is tested on the fact pattern rather than on OCR artifacts."
+    },
+    {
+      "id": "e04-auditor-conclusion-attributed-to-directors-unsupported",
+      "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4",
+      "page_number": 21,
+      "claim": "The directors concluded that they had not identified any material uncertainties casting significant doubt on the Company's ability to continue as a going concern.",
+      "supporting_text": "Based on the work we have performed, we have not identified any material uncertainties relating to events or conditions that, individually or collectively, may cast significant doubt on the company's ability to continue as a going concern for a period to 31 December 2024.",
+      "human_verdict": "unsupported",
+      "human_reason": "This sentence is the independent auditor's own conclusion (from the Independent Auditor's Report, first person 'we'), not the directors'. Reconstructs the real, previously documented directors-vs-auditor voice-confusion failure.",
+      "note": "This directly parallels the real failure investigation_agent.py's system prompt was tightened to prevent in synthesis (see README's 'Run the investigation agent' section)."
+    },
+    {
+      "id": "e05-directors-going-concern-conclusion-supported",
+      "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4",
+      "page_number": 30,
+      "claim": "The directors concluded that the Company has adequate available resources to fund its operations for the foreseeable future and remains appropriate to prepare on a going concern basis.",
+      "supporting_text": "Based on their assessment, the directors believe the Company has adequate available resources to fund its operations for the foreseeable future, and not less than 12 months from the date of the signing of these Company financial statements, and so determine that it remains appropriate for the Company financial statements to be prepared on a going concern basis.",
+      "human_verdict": "supported",
+      "human_reason": "This is the directors' own stated conclusion, correctly attributed."
+    },
+    {
+      "id": "e06-fy2025-dividend-figure-cited-for-fy2022-unsupported",
+      "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4",
+      "page_number": 13,
+      "claim": "During FY2022, £26.0m of dividends were paid.",
+      "supporting_text": "During the year £26.0m of Dividends were paid (2024: £12.7m).",
+      "human_verdict": "unsupported",
+      "human_reason": "This page is the FY2025 directors' report; '£26.0m' is the FY2025 dividend figure (with 2024 as its comparative), not FY2022's. The excerpt is real and accurately quoted, but does not substantiate a claim about FY2022."
+    },
+    {
+      "id": "e07-fy2022-dividend-figure-supported",
+      "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4",
+      "page_number": 41,
+      "claim": "Gymshark paid £10,600 thousand in dividends in FY2022, compared to none in FY2021.",
+      "supporting_text": "Dividends paid 10,600 -",
+      "human_verdict": "supported",
+      "human_reason": "The page's Dividends note states this figure under a '2022' column with a '2021' comparative of nil (shown as a dash)."
+    },
+    {
+      "id": "e08-fy2022-director-not-listed-unsupported",
+      "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4",
+      "page_number": 2,
+      "claim": "P Daw served as a director of Gymshark according to the FY2022 accounts.",
+      "supporting_text": "B Francis\nN Chana",
+      "human_verdict": "unsupported",
+      "human_reason": "The FY2022 company information page lists only B Francis and N Chana as directors; P Daw is not named on this page (P Daw appears in the FY2021 filing instead)."
+    },
+    {
+      "id": "e09-fy2022-directors-supported",
+      "transaction_id": "MzM3NjY2NTQ5OGFkaXF6a2N4",
+      "page_number": 2,
+      "claim": "According to the FY2022 accounts, Gymshark's directors were B Francis and N Chana, with C Reed as company secretary.",
+      "supporting_text": "B Francis\nN Chana",
+      "human_verdict": "supported",
+      "human_reason": "Matches the FY2022 company information page's Directors and Company secretary fields exactly."
+    },
+    {
+      "id": "e10-stock-provision-cause-unsupported",
+      "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4",
+      "page_number": 36,
+      "claim": "Gymshark's year-end stock provision fell from £3.0m in FY2022 to £1.1m in FY2023 because of improved demand forecasting.",
+      "supporting_text": "The year end stock provision totalled £1.1m (2022: £3.0m).",
+      "human_verdict": "unsupported",
+      "human_reason": "The figures themselves are real and correctly stated, but the page does not state 'improved demand forecasting' or any other cause for the change - that causal explanation is an unsupported addition beyond what the excerpt says."
+    },
+    {
+      "id": "e11-stock-provision-fact-supported",
+      "transaction_id": "MzQxMTcyMTI0OWFkaXF6a2N4",
+      "page_number": 36,
+      "claim": "Gymshark's year-end stock provision fell from £3.0m in FY2022 to £1.1m in FY2023.",
+      "supporting_text": "The year end stock provision totalled £1.1m (2022: £3.0m).",
+      "human_verdict": "supported",
+      "human_reason": "States only the figures the page itself gives, with no added interpretation of cause."
+    },
+    {
+      "id": "e12-rd-expenditure-wrong-year-column-unsupported",
+      "transaction_id": "MzMzOTgxMDE1NmFkaXF6a2N4",
+      "page_number": 28,
+      "claim": "Gymshark's R&D expenditure was £1,049 thousand in the year ended 31 July 2021.",
+      "supporting_text": "R&D Expenditure\n2021\n£000\n1,085\n2020\n£000\n1,049",
+      "human_verdict": "unsupported",
+      "human_reason": "1,049 is the 2020 (prior-year comparative) figure; the 2021 figure stated on the same page is 1,085. The claim picks the wrong column."
+    },
+    {
+      "id": "e13-rd-expenditure-correct-year-column-supported",
+      "transaction_id": "MzMzOTgxMDE1NmFkaXF6a2N4",
+      "page_number": 28,
+      "claim": "Gymshark's R&D expenditure rose from £1,049 thousand in FY2020 to £1,085 thousand in FY2021.",
+      "supporting_text": "R&D Expenditure\n2021\n£000\n1,085\n2020\n£000\n1,049",
+      "human_verdict": "supported",
+      "human_reason": "Correctly matches each figure to its own year column."
+    },
+    {
+      "id": "e14-fy2025-turnover-reasonable-rounding-supported",
+      "transaction_id": "MzUxOTQyNDAwMWFkaXF6a2N4",
+      "page_number": 20,
+      "claim": "Gymshark's turnover for the year ended 31 July 2025 was approximately £490 million.",
+      "supporting_text": "Turnover 3 490,142 458,624",
+      "human_verdict": "supported",
+      "human_reason": "£490,142k rounds to 'approximately £490 million' without being misleading; this is a deliberately borderline case testing whether the judge over-penalizes reasonable rounding."
+    }
+  ]
+}

@@ -59,7 +59,11 @@ can:
 - pause a finding that is an interpretation, or that reports insufficient
   evidence, for a human analyst to approve, edit, reject, or flag for
   further research, with every decision persisted (see
-  [Human-in-the-loop review](#human-in-the-loop-review) below).
+  [Human-in-the-loop review](#human-in-the-loop-review) below); and
+- measure how well an LLM judge for citation entailment agrees with human
+  labels on a small hand-built calibration set, offline from the live
+  investigation pipeline (see
+  [Calibrating an LLM judge](#calibrating-an-llm-judge) below).
 
 Temporal analysis remains deliberately deferred until the relevant project
 phase.
@@ -72,7 +76,7 @@ phase.
 - Tesseract OCR 5 with English language data
 - A Companies House REST API key
 - An OpenAI API key (only needed for `embed-document`, `evaluate-retrieval
-  --retrieval-method vector|hybrid`, and `investigate`)
+  --retrieval-method vector|hybrid`, `investigate`, and `calibrate-judge`)
 
 Install Tesseract on macOS with Homebrew:
 
@@ -1734,6 +1738,110 @@ analyst-facing UI beyond this CLI (the project brief's own TypeScript
 review-interface idea, explicitly gated on the backend workflow existing
 first and serving a real need).
 
+## Calibrating an LLM judge
+
+`docs/project-brief.md` asks that any LLM-as-a-judge be calibrated against
+human judgement before being trusted - exactly the prerequisite the
+[reverted citation-entailment-checking attempt](#a-reverted-attempt-at-citation-entailment-checking)
+above said revisiting it would need. This milestone builds that
+calibration harness. It is deliberately **offline evaluation only**: it
+does not wire a judge into `investigate()`'s live citation validation, and
+it does not itself decide whether to revisit that reverted attempt - it
+only produces the honest, human-labelled measurement such a decision would
+need.
+
+`entailment_judge.py` rebuilds the judge design from this README's own
+account of the reverted attempt's most-refined version - full cited-page
+context, and an explicit instruction to trust the filer's own arithmetic
+rather than second-guess it. This is new code, not resurrected from git:
+the original was built and discarded within one working session and never
+committed. `judge_calibration.py` mirrors `retrieval_evaluation.py`'s
+shape exactly - a dataset loader, a per-example scorer, and a
+`run_calibration` aggregator - over a new hand-labelled dataset.
+
+### The calibration dataset
+
+[`evaluation/citation_entailment_judgments.json`](evaluation/citation_entailment_judgments.json)
+has 14 `(claim, cited excerpt, human verdict)` examples, built the same
+way this project's other evaluation datasets are: by hand-reading real,
+persisted Gymshark OCR page text, not invented. Several examples
+deliberately reconstruct this project's own previously documented real
+failures, so the dataset directly tests whether the redesigned judge fixes
+the specific problems already observed, not just whether it performs well
+in the abstract:
+
+- the FY2022 "External D2C sales" component figure (£253,893k) mis-cited
+  as that year's full-year turnover total (the real case that originally
+  motivated building an entailment judge at all);
+- the FY2021 turnover arithmetic (external sales + intercompany sales =
+  the page's own stated total) that the *original* reverted judge design
+  wrongly flagged as unsupported by second-guessing the filer's own sum;
+- the independent auditor's own going-concern conclusion cited to support
+  a claim that attributes it to the directors (the voice-confusion failure
+  `synthesize_finding`'s prompt was separately tightened to prevent, see
+  [Run the investigation agent](#run-the-investigation-agent) above);
+- a wrong-year dividend figure, a director not listed on a given year's
+  filing, an unsupported causal explanation for a real figure, a
+  wrong-year-column numeric swap, and a deliberately borderline reasonable
+  rounding case, alongside a correctly-supported counterpart for most of
+  these so the dataset isn't all one class.
+
+### Running it
+
+```bash
+uv run company-researcher calibrate-judge
+```
+
+Scores the judge's verdict against each example's `human_verdict` and
+reports precision/recall/F1 treating `unsupported` as the positive class,
+not only accuracy: the original judge's specific failure was a false
+positive (flagging a genuinely supported citation as unsupported), so
+collapsing that into one accuracy number would hide the thing most worth
+measuring.
+
+### Measured result
+
+Run against the real LLM and the real dataset, and stable across three
+repeated runs - identical numbers every time, a marked difference from the
+original attempt's run-to-run self-contradiction:
+
+| Metric | Value |
+| --- | --- |
+| Accuracy | 0.857 |
+| Precision (unsupported) | 1.000 |
+| Recall (unsupported) | 0.667 |
+| F1 (unsupported) | 0.800 |
+
+This is a genuine, mixed result. The redesigned judge fixed the specific
+bug that motivated the redesign: the FY2021 arithmetic example the
+original judge wrongly rejected is now correctly judged `supported`, and
+precision is a perfect 1.000 - across all 14 examples, it never once
+flagged a genuinely supported citation as unsupported.
+
+But it has a different, real weakness. Of the two disagreements, both are
+false negatives, and both are exactly the failure types this judge exists
+to catch:
+
+- it judged the "External D2C sales" component figure (£253,893k) as
+  supporting a claim that it was the year's full-year total - the
+  original real case that motivated building this judge in the first
+  place, still missed;
+- it judged the auditor's own going-concern conclusion as supporting a
+  claim that attributes it to the directors - the exact voice-confusion
+  failure already fixed once elsewhere in this project by tightening
+  `synthesize_finding`'s own prompt, not by an entailment judge.
+
+This does not justify reintroducing entailment checking into the live
+pipeline: on the two cases that most motivated building it, this version
+of the judge would let through exactly the citations it was meant to
+catch. It is a real improvement over the original attempt (which failed
+on reliability - self-contradictory verdicts - rather than on recall), and
+a concrete, evidenced basis for the next step: a larger, harder-negative-
+weighted calibration set and a further prompt-design iteration measured
+the same way this one was, not a decision made from 14 examples alone.
+That further iteration is deliberately left as separate, unstarted work
+rather than squeezed into this slice.
+
 ## Quality checks
 
 Most of this project's tests exercise a real local PostgreSQL instance (the
@@ -1793,12 +1901,13 @@ uv run ruff format .
 │   ├── artifact_store.py               # Content-addressed source artifacts
 │   ├── baseline_agent.py               # No-retrieval general-LLM baseline
 │   ├── baseline_comparison.py          # Baseline-vs-specialized-agent comparison
-│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, investigation, review, and comparison CLI
+│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, investigation, review, calibration, and comparison CLI
 │   ├── config.py                       # Environment-backed settings
 │   ├── discriminative_query.py         # Corpus document-frequency query ranking
 │   ├── document_ingestion.py           # Filing-document acquisition and persistence
 │   ├── embedding_persistence.py        # Idempotent page-embedding persistence
 │   ├── embeddings_client.py            # Async client for the embeddings provider
+│   ├── entailment_judge.py             # Citation-entailment LLM judge (calibration-only)
 │   ├── extraction_persistence.py       # Idempotent page-extraction persistence
 │   ├── fiscal_year_extraction.py       # Deterministic fiscal-year extraction from question text
 │   ├── fiscal_year_lookup.py           # Filing lookup by accounting period (made_up_date)
@@ -1806,6 +1915,7 @@ uv run ruff format .
 │   ├── hybrid_search.py                # Reciprocal Rank Fusion of lexical and vector rankings
 │   ├── ingestion.py                    # Idempotent persistence of source data
 │   ├── investigation_agent.py          # LangGraph investigation agent and citation validation
+│   ├── judge_calibration.py            # LLM-judge-vs-human-label calibration harness
 │   ├── lexical_search.py               # PostgreSQL full-text page search
 │   ├── llm_client.py                   # Async client for the chat completions provider
 │   ├── main.py                         # FastAPI application factory

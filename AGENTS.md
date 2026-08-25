@@ -661,6 +661,54 @@ interpretation/insufficiency, and any analyst-facing UI beyond this CLI
 (the project brief's own TypeScript review-interface idea, explicitly
 gated on the backend workflow existing first).
 
+An LLM-judge calibration milestone is now built and measured, the
+explicitly agreed next step after the HITL slice above. This is
+deliberately offline evaluation only - it does not wire anything into
+`investigate()`'s live citation-validation path, and does not itself
+decide whether to revisit the reverted entailment check; it only produces
+the honest, human-labelled measurement that decision would need.
+`entailment_judge.py` rebuilds the citation-entailment judge design from
+README's account of the reverted attempt's most-refined version (full
+cited-page context, explicit trust in the filer's own arithmetic) - new
+code, not resurrected from git, since the original was never committed.
+`judge_calibration.py` mirrors `retrieval_evaluation.py`'s shape exactly
+(a loader, a per-example scorer, a `run_calibration` aggregator) over a
+new hand-labelled dataset, `evaluation/citation_entailment_judgments.json`
+- 14 (claim, cited excerpt, human verdict) examples built by hand-reading
+real Gymshark filing pages (not invented), several of which deliberately
+reconstruct this project's own previously documented real failures: the
+FY2022 "External D2C sales" component figure mis-cited as the full-year
+total, the FY2021 turnover arithmetic the original reverted judge wrongly
+rejected, and the directors-vs-auditor going-concern voice confusion.
+Scoring reports precision/recall/F1 treating "unsupported" as the
+positive class, not just accuracy, since the original failure was
+specifically about false positives (flagging a real citation as
+unsupported) - collapsing that into one number would hide the thing most
+worth measuring. New CLI command: `calibrate-judge [dataset_path]`.
+
+Measured against the real LLM and the real dataset, and stable across
+three repeated runs (identical numbers each time - a marked difference
+from the original attempt's run-to-run self-contradiction): Accuracy =
+0.857, Precision(unsupported) = 1.000, Recall(unsupported) = 0.667,
+F1(unsupported) = 0.800. The redesigned judge fixed the specific bug that
+motivated the redesign - the FY2021 arithmetic example that the original
+judge wrongly rejected is now correctly judged supported, and precision
+is a perfect 1.0, meaning it never wrongly flagged a genuinely supported
+citation across all 14 examples. But it has a different, real weakness:
+of the two disagreements, both are false negatives, and both are exactly
+the failure types this judge exists to catch - it judged the "External
+D2C sales" component figure as supporting a full-year-total claim (the
+original real case that motivated building an entailment judge at all),
+and it judged the auditor's own going-concern conclusion as supporting a
+claim attributing it to the directors (the exact voice-confusion failure
+`synthesize_finding`'s prompt was separately tightened to prevent). This
+is a genuine, mixed result, reported honestly rather than rounded up:
+better-calibrated than the original attempt on this evidence, but not yet
+reliable enough on its own two motivating cases to justify revisiting
+live re-integration - that would need a larger, harder-negative-weighted
+calibration set and a further prompt-design iteration measured the same
+way, not a decision made from a 14-example first pass.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or
