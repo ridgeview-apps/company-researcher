@@ -42,9 +42,17 @@ async def search_pages(
     year. `company_number`, when given, restricts candidates to pages
     belonging to that company's filings, joining
     DocumentPage -> DocumentExtraction -> FilingDocument -> Filing to reach
-    `Filing.company_number`. Both default to no restriction so existing
-    callers (in particular retrieval evaluation, whose measured baseline
-    must stay unaffected) are unchanged.
+    `Filing.company_number`. Both default to no restriction, so a caller
+    that omits them is unaffected.
+
+    Ties in `rank` are broken by `document_extraction_id` then
+    `page_number` so ranking is fully deterministic regardless of query
+    plan -- `ts_rank` alone produces exact ties fairly often (e.g. several
+    pages matching the same OR-combined terms an equal number of times),
+    and without an explicit secondary sort key PostgreSQL is free to
+    return tied rows in whatever order its query plan happens to produce,
+    which silently changed (and changed a real evaluation score) the
+    first time a second `company_number`-restricting join was added here.
     """
     stemmed_terms = func.plainto_tsquery(_TEXT_SEARCH_CONFIGURATION, query).cast(Text)
     tsquery = func.to_tsquery(
@@ -72,7 +80,9 @@ async def search_pages(
             .join(Filing, Filing.id == FilingDocument.filing_id)
             .where(Filing.company_number == company_number)
         )
-    statement = statement.order_by(rank.desc()).limit(limit)
+    statement = statement.order_by(
+        rank.desc(), DocumentPage.document_extraction_id, DocumentPage.page_number
+    ).limit(limit)
     result = await session.execute(statement)
     return [
         PageMatch(

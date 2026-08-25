@@ -380,8 +380,14 @@ the query the CLI command actually issues; see the caveat below the results):
 | q3-fy2022-amendment-comparison | 0.00 | 0.50 | 0.14 |
 | q4-directors-fy2021-fy2025 | 1.00 | 1.00 | 1.00 |
 | q5-dividends-fy2022-vs-fy2025 | 0.50 | 1.00 | 0.33 |
-| q6-going-concern-fy2023 | 0.50 | 0.50 | 0.20 |
-| **Mean** | **0.625** | **0.833** | **0.446** |
+| q6-going-concern-fy2023 | 0.50 | 0.50 | 0.33 |
+| **Mean** | **0.625** | **0.833** | **0.468** |
+
+(Q6's reciprocal rank and the mean MRR were originally measured as 0.20
+and 0.446; see
+[Scoping retrieval to one company](#scoping-retrieval-to-one-company)
+below for why they changed — a ranking-tiebreak fix, not a change in
+retrieval quality.)
 
 Query wording, not the ranking mechanism, was the dominant cause of the first
 result: the same OR-combined `ts_rank` search goes from finding nothing to
@@ -440,11 +446,19 @@ pages — and keeps the 4 rarest):
 | --- | --- | --- | --- |
 | q1-fy2025-turnover | 0.00 | 1.00 | 0.14 |
 | q2-turnover-trend-fy2021-fy2025 | 0.00 | 0.00 | 0.00 |
-| q3-fy2022-amendment-comparison | 0.00 | 0.00 | 0.06 |
-| q4-directors-fy2021-fy2025 | 0.00 | 0.00 | 0.02 |
+| q3-fy2022-amendment-comparison | 0.00 | 0.00 | 0.02 |
+| q4-directors-fy2021-fy2025 | 0.00 | 0.00 | 0.03 |
 | q5-dividends-fy2022-vs-fy2025 | 0.00 | 0.00 | 0.06 |
 | q6-going-concern-fy2023 | 0.50 | 0.50 | 0.50 |
-| **Mean** | **0.083** | **0.250** | **0.130** |
+| **Mean** | **0.083** | **0.250** | **0.125** |
+
+(Q3 and Q4's reciprocal ranks, and the mean MRR, were originally measured
+as 0.06/0.02 and 0.130. This strategy's document-frequency statistics are
+computed across *all* persisted document pages by design — see
+[Scoping retrieval to one company](#scoping-retrieval-to-one-company)
+below for why ingesting a second company genuinely changed its input
+statistics, unlike the hand-tuned queries above, which are fixed strings
+and unaffected by corpus size.)
 
 A real, if partial, improvement over stopword-only (Mean Recall@10 0.0 →
 0.25, MRR 0.03 → 0.13) — ranking by corpus rarity recovers some signal a
@@ -603,7 +617,7 @@ vector-only baseline above:
 | **Mean** | **0.083** | **0.125** | **0.099** |
 
 This is a genuine negative result. Hybrid scores worse than hand-tuned
-lexical alone (Mean Recall@5 = 0.625, Recall@10 = 0.833, MRR = 0.446) on
+lexical alone (Mean Recall@5 = 0.625, Recall@10 = 0.833, MRR = 0.468) on
 *every single question*, and only marginally better than vector alone (Mean
 Recall@5 = 0.000, Recall@10 = 0.083, MRR = 0.044). Combining the two
 rankings did not split the difference between them — it pulled the strong
@@ -1087,10 +1101,14 @@ now takes an optional `company_number` parameter, joining
 `Filing.company_number` (this join path was verified against
 [`db/models.py`](src/company_researcher/db/models.py) before writing the
 query, not assumed). It defaults to `None` (no restriction), the same
-no-op-by-default pattern the fiscal-year restriction established, so
-`retrieval_evaluation.py`'s two `search_pages` call sites — which do not pass
-it — are provably unaffected: re-running `evaluate-retrieval` after this
-change reproduced the exact same Mean Recall@5/@10/MRR reported above.
+no-op-by-default pattern the fiscal-year restriction established. At the
+point this parameter was added, only Gymshark was persisted, so
+`retrieval_evaluation.py`'s two `search_pages` call sites — which did not
+pass it yet — were provably unaffected: re-running `evaluate-retrieval`
+immediately after this change reproduced the exact same Mean
+Recall@5/@10/MRR reported above. That call sites *not yet* passing it
+turned out to matter for real the moment a second company was ingested —
+see below.
 
 `investigate()` in
 [`investigation_agent.py`](src/company_researcher/investigation_agent.py)
@@ -1116,6 +1134,92 @@ were updated to pass an explicit `company_number`; and a real run of
 `company-researcher investigate` (no arguments) against the persisted
 Gymshark corpus completed successfully end-to-end with the new default
 wired through the CLI, `investigate()`, and `search_pages`.
+
+### Ingesting a second company: Nothing Technology Ltd
+
+Nothing Technology Ltd (company number `12984564`) is now ingested as the
+second company — the project brief's suggested first step toward an
+unseen holdout evaluation set. Its company number was looked up against
+the live Companies House website and confirmed against the real
+Companies House API via `inspect` before ingesting, not guessed. It was
+chosen over Made.com Design Ltd (the brief's other suggestion) because it
+is usable with what this project has already built: its filing history
+includes 6 registered-charge (`MR01`) filings across two creation batches
+alongside its accounts filings, matching the brief's "financing-related
+investigation, distinguishing evidence from speculation" framing, whereas
+Made.com's main intended value — point-in-time, hindsight-leakage
+analysis — needs an as-of retrieval constraint this project has not built
+yet.
+
+`company-researcher ingest 12984564` persisted its profile and 46 filing
+items. `company-researcher ingest-document` and `extract-document` then
+downloaded and OCR'd 9 of those filings: its 3 accounts filings (covering
+accounting periods ended 2021-10-31, 2022-12-31, and 2023-12-31) and all
+6 charge-creation filings. One administrative filing in the same window
+(`AA01`, a pure accounting-reference-date change with no narrative
+content) was deliberately skipped.
+
+No evaluation dataset, retrieval evaluation, or investigation-agent run
+has been built for Nothing Technology yet — this step only ingests and
+OCR-extracts its filings. Constructing an evaluation dataset for it and
+running the agent-vs-general-LLM baseline comparison the project brief
+calls for remain separate, not-yet-started work.
+
+### Cross-company contamination in retrieval evaluation, and a latent ranking-tie bug
+
+Ingesting a second company immediately surfaced a real, measured
+consequence of the company-scoping work above, not a hypothetical one.
+`retrieval_evaluation.py`'s lexical `search_pages` calls were still
+unscoped by company, so once Nothing Technology's pages shared the same
+`document_pages` table as Gymshark's, they began competing in Gymshark's
+evaluation rankings — exactly the risk this README and AGENTS.md have
+flagged as "not yet mattering in practice" since the very first
+retrieval-evaluation milestone. Measured effect, re-running
+`evaluate-retrieval` right after ingestion: Gymshark's hand-tuned lexical
+MRR moved from 0.446 to 0.427 (Recall@5/@10 unchanged) purely from this
+cross-contamination — nothing else about the evaluation dataset, corpus,
+or code had changed.
+
+Since `EvaluationDataset` already carries `company_number`, and it was
+already threaded through `evaluate_question` and
+`evaluate_question_hybrid`'s signatures, the fix was small: pass it to
+their `search_pages` calls the same way `investigation_agent.py` already
+does. `vector_search.py`'s `search_pages_by_embedding` has no equivalent
+company-scoping parameter and is a real, still-open gap — currently
+latent only because Nothing Technology's pages have not been embedded;
+the moment they are, vector and hybrid evaluation would be exposed to the
+same cross-contamination. Closing that gap is deliberately left as
+unstarted follow-up work here, not silently bundled into this fix.
+
+Re-measuring after the `retrieval_evaluation.py` fix surfaced a second,
+more interesting issue — a genuine latent bug the fix exposed, not a
+regression it introduced. Q2's MRR did not return to its original value
+even though the correct pages were once again the only candidates.
+Comparing `search_pages`'s raw output for the same query, scoped vs.
+unscoped, showed exactly why: three Gymshark pages tie exactly on
+`ts_rank`, and `search_pages`'s `ORDER BY rank DESC` had no secondary
+sort key, so PostgreSQL was free to return those tied rows in whatever
+order its query plan happened to produce — an order that silently changed
+the moment the company-scoping join altered that plan. This was a
+pre-existing gap in a project that calls its lexical baseline
+"deterministic": ties were always implicitly order-dependent on query
+plan, it just never surfaced before this join existed to change the plan.
+Fixed by adding `document_extraction_id, page_number` as a secondary
+`ORDER BY` key in `search_pages`, so tie order is canonical regardless of
+query plan; confirmed stable across three repeated `evaluate-retrieval`
+runs afterward.
+
+The net effect of both fixes, re-measured against the real corpus and
+reflected in the results tables above: hand-tuned lexical Mean
+Recall@5/@10 unchanged (0.625/0.833), MRR 0.446 → 0.468 (one Gymshark
+tie now breaks differently under the new canonical order — a
+methodology correction, not a retrieval-quality change); vector-only and
+naive hybrid unaffected, since Nothing Technology has no embeddings yet;
+and `derived-idf`'s MRR moved 0.130 → 0.125, which *is* a genuine,
+expected change rather than a bug, since that strategy's document-
+frequency statistics are explicitly computed across all persisted
+document pages by design, and Nothing Technology's 350 pages are
+now part of that corpus.
 
 ## Quality checks
 

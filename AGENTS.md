@@ -23,7 +23,9 @@ manually labelled Gymshark retrieval evaluation corpus
 Matching a full natural-language question against single pages scored poorly
 (Mean Recall@5 = Recall@10 = 0.0, MRR = 0.03). Using a short, targeted keyword
 query instead — same `ts_rank` ranking, only the query text changed — raised
-this to Mean Recall@5 = 0.625, Recall@10 = 0.833, MRR = 0.446, but those
+this to Mean Recall@5 = 0.625, Recall@10 = 0.833, MRR = 0.468 (originally
+measured as 0.446; see the company-scoping note near the end of this file
+for why the figure moved), but those
 queries were hand-tuned by trial and error directly against the 6 questions
 being scored, so that result does not show generalization to an unseen
 question. A deterministic, corpus-blind query-construction function,
@@ -96,7 +98,7 @@ before scoring.
 Measured against the same 6 Gymshark questions, combining hand-tuned
 lexical (`--query-source dataset`, the CLI default) with vector: Mean
 Recall@5 = 0.083, Recall@10 = 0.125, MRR = 0.099 — worse than hand-tuned
-lexical alone (0.625 / 0.833 / 0.446) on every question, and only
+lexical alone (0.625 / 0.833 / 0.468) on every question, and only
 marginally better than vector alone (0.000 / 0.083 / 0.044). Diagnosed
 cause (see `README.md` for the worked Q1 example): equal-weighted RRF
 implicitly assumes both rankers place the correct page somewhere reasonably
@@ -336,6 +338,72 @@ detail. This closes the standing limitation flagged since the first
 retrieval-evaluation milestone; it does not itself ingest a second
 company or build the holdout evaluation set or LLM-baseline comparison
 the project brief calls for — those remain separate, not-yet-started
+work.
+
+A second company, Nothing Technology Ltd (`12984564`), is now ingested —
+the project brief's suggested first step toward an unseen holdout
+evaluation set, chosen (over Made.com) because it is usable with what is
+already built: its filing history includes registered charges (6 `MR01`
+charge-creation filings, in two batches) alongside its accounts filings,
+matching the project brief's "financing-related investigation,
+distinguishing evidence from speculation" framing, whereas Made.com's
+main value (point-in-time/hindsight-leakage analysis) needs an as-of
+retrieval constraint this project has not built. Its company number was
+looked up against the live Companies House website, not guessed, then
+confirmed against the real Companies House API via `inspect` before
+ingesting. Profile, filing history (46 filings), and 9 filing documents —
+its 3 accounts filings (FY ending 2021-10-31, 2022-12-31, 2023-12-31) and
+all 6 charge-creation filings — were downloaded and OCR-extracted; the
+one purely administrative filing in this set (an `AA01` accounting-
+reference-date change, with no narrative content) was deliberately
+skipped.
+
+Ingesting it immediately surfaced a real, measured consequence of the
+company-scoping work above, rather than a hypothetical one:
+`retrieval_evaluation.py`'s lexical `search_pages` calls were still
+unscoped by company, so once Nothing Technology's pages shared the same
+`document_pages` table, they began competing in Gymshark's evaluation
+rankings — exactly the risk flagged as "not yet mattering in practice"
+since the very first retrieval-evaluation milestone. Measured effect:
+Gymshark's hand-tuned lexical MRR moved from 0.446 to 0.427 (Recall@5/@10
+unchanged) purely from this cross-contamination. Since
+`EvaluationDataset` already carries `company_number` and it was already
+threaded through `evaluate_question`/`evaluate_question_hybrid`, the fix
+was small: pass it to their `search_pages` calls the same way
+`investigation_agent.py` does. (`vector_search.py`'s
+`search_pages_by_embedding` has no equivalent company-scoping parameter
+and remains an open gap — currently latent only because Nothing
+Technology's pages have not been embedded; the moment they are, vector
+and hybrid evaluation would be exposed to the same cross-contamination,
+and closing that gap is deliberately left as unstarted follow-up work,
+not silently bundled into this fix.)
+
+Re-measuring after that fix surfaced a second, more interesting latent
+issue, not a regression in the fix itself: Q2's MRR did not return to its
+original value, because `search_pages`'s `ORDER BY rank DESC` had no
+secondary sort key. `ts_rank` produces exact ties reasonably often (three
+Gymshark pages tied for Q2), and without a deterministic tiebreak,
+PostgreSQL is free to return tied rows in whatever order its query plan
+produces — which silently changed the moment the company-scoping join
+altered that plan, confirmed by directly comparing scoped vs. unscoped
+`search_pages` output for the same query and finding the same three pages
+in a different order. This was a pre-existing gap in a project that calls
+its lexical baseline "deterministic," just never exposed before this
+join existed. Fixed by adding `document_extraction_id, page_number` as a
+secondary `ORDER BY` key, making tie order canonical regardless of query
+plan; confirmed stable across repeated runs afterward.
+
+The net effect of both fixes, re-measured against the real corpus: hand-
+tuned lexical Mean Recall@5/@10 unchanged (0.625/0.833), MRR 0.446 →
+0.468 (one Gymshark tie now breaks differently under the canonical
+order); vector-only and naive hybrid unaffected (Nothing Technology has
+no embeddings yet); `derived-idf`'s MRR moved 0.130 → 0.125, expected and
+correct rather than a bug, since that strategy's document-frequency
+statistics are explicitly computed corpus-wide and Nothing Technology's
+350 pages are now part of that corpus. See README.md's "Scoping
+retrieval to one company" section for the full detail and updated
+tables. Evaluation-dataset construction for Nothing Technology and the
+agent-vs-general-LLM baseline comparison remain separate, not-yet-started
 work.
 
 Work incrementally. Challenge and refine each step of an agreed milestone

@@ -222,7 +222,9 @@ async def evaluate_question(
     relevant = await _resolve_relevant_extraction_pages(
         session, company_number, question.relevant_pages
     )
-    matches = await search_pages(session, question.query, limit=search_depth)
+    matches = await search_pages(
+        session, question.query, limit=search_depth, company_number=company_number
+    )
     retrieved = [(match.document_extraction_id, match.page_number) for match in matches]
     return _score_retrieved_pages(question.id, retrieved, relevant, k_values)
 
@@ -338,7 +340,9 @@ async def evaluate_question_hybrid(
     relevant = await _resolve_relevant_extraction_pages(
         session, company_number, question.relevant_pages
     )
-    lexical_matches = await search_pages(session, question.query, limit=search_depth)
+    lexical_matches = await search_pages(
+        session, question.query, limit=search_depth, company_number=company_number
+    )
     (query_embedding,) = await embeddings_client.embed([question.text])
     vector_matches = await search_pages_by_embedding(
         session,
