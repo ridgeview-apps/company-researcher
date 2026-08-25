@@ -50,7 +50,12 @@ can:
   LangGraph agent that generates its own lexical search query, retrieves
   evidence pages, and produces a structured, citation-grounded finding whose
   citations are validated against the evidence actually retrieved (see
-  [Run the investigation agent](#run-the-investigation-agent) below).
+  [Run the investigation agent](#run-the-investigation-agent) below); and
+- compare that agent against a no-retrieval general-LLM baseline over the
+  same labelled question sets, checking every baseline citation attempt
+  against real persisted pages (see
+  [Compare the specialized agent against a general-LLM baseline](#compare-the-specialized-agent-against-a-general-llm-baseline)
+  below).
 
 Temporal analysis and human-in-the-loop workflows remain deliberately
 deferred until the relevant project phase.
@@ -1462,6 +1467,114 @@ frequency statistics are explicitly computed across all persisted
 document pages by design, and Nothing Technology's 350 pages are
 now part of that corpus.
 
+## Compare the specialized agent against a general-LLM baseline
+
+`docs/project-brief.md` frames this project's central research question as:
+does a specialized, evidence-driven agent produce more complete, grounded,
+and auditable investigations than simply asking a general LLM the same
+question? This is the first, deliberately narrow slice of that comparison
+- one baseline (the brief's option 1, "General LLM," with no retrieval or
+tools at all), reusing the two hand-labelled evaluation datasets already
+built rather than a third, and no automated factual-accuracy scoring.
+
+[`baseline_agent.py`](src/company_researcher/baseline_agent.py) answers a
+question with a single LLM call and no retrieval, reusing `Finding` -
+the exact structured output the specialized agent produces - so a
+baseline citation attempt can be checked the same way any other citation
+would be, rather than assuming it simply has none.
+[`baseline_comparison.py`](src/company_researcher/baseline_comparison.py)
+runs both the baseline and the real `investigate()` agent for each
+question in a dataset, measuring latency for each and checking every
+baseline citation against real, persisted `DocumentPage` rows - a fully
+deterministic check, no LLM judge: a citation either points at a page
+that exists in the corpus or it does not. A specialized-agent
+`InvestigationAgentError` is caught, not treated as a run failure - the
+agent refusing to serve a fabricated or unretrieved citation is itself
+part of what this comparison measures. `llm_client.py`'s `ChatClient`
+gained `complete_with_usage`/`complete_structured_with_usage` (parsing
+the `usage` field the API response already includes but the client
+previously discarded) so the baseline's token cost could be measured
+too - added as new methods alongside the existing `complete`/
+`complete_structured`, not a change to them, so the `ChatProvider`
+protocol and every existing caller (in particular `investigation_agent.py`
+and its fakes in `test_investigation_agent.py`) stay untouched.
+
+```bash
+uv run company-researcher compare-baseline
+uv run company-researcher compare-baseline evaluation/nothing_technology_retrieval_questions.json
+```
+
+Deliberately out of scope for this slice, flagged rather than silently
+skipped: the brief's second baseline ("General LLM + web," which needs
+real tool/browsing integration); automated or LLM-judge factual-accuracy
+scoring (factual accuracy below was checked by direct comparison against
+each question's already-written, manually-verified `note` field);
+material-event recall and completeness scoring; temporal/future-leakage
+testing (no as-of retrieval capability exists yet to test it against);
+and specialized-agent token cost, since `investigate()` itself was not
+changed to use the new usage-aware client methods - only the baseline's
+cost is measured here, asymmetrically, and that asymmetry is recorded
+rather than implied away.
+
+### Observed real-run result
+
+Run against both datasets (12 questions total), the baseline never
+attempted a single citation - not one fabricated `document_extraction_id`
+across all 12 questions, and `evidence_sufficient=false` on every single
+one. That restraint did not extend to the claim text itself, though: the
+baseline still stated specific, confident-sounding facts in the same
+breath as flagging its own uncertainty, and at least two are directly,
+verifiably wrong against each dataset's hand-verified answer. Asked who
+Gymshark's directors and company secretary were, it named the secretary
+as "Alison O'Mahony" - every one of the evaluation dataset's four
+filing-years states the secretary was "C Reed," a name the baseline
+never mentioned. Asked about Nothing Technology's directors, it named
+"Richard Liu" alongside Carl Pei - a name that appears nowhere in any of
+that company's real filings (the real directors across every year are
+Carl Pei, David Sanmartin Garcia, and Timothy Holbrow). Nothing Technology's
+revenue/loss question fared no better: the baseline stated "£45 million"
+revenue and "£20 million" loss for FY2023, against real, filed figures of
+£49.6m and £59.4m.
+
+The specialized agent answered 5 of the 12 questions with a claim that
+matches the dataset's own verified answer exactly (e.g. Gymshark's FY2025
+turnover, £490,142,000 vs £458,624,000 prior year, and the FY2021-FY2025
+turnover trend across all four filed years) and correctly refused to
+answer the other 7 - raising `InvestigationAgentError` rather than
+serving an unverified or fabricated citation. Two of those 7 are the
+already-documented, still-open limitations above (Nothing Technology's
+FY2021 P&L exemption; see "A known limitation" above). A third is a new
+instance of the same *class* of problem the citation-quote-verification
+milestone was built to catch, but this specific run surfaced one more
+unhandled OCR substitution, not yet fixed: `_normalize_for_quote_check`
+strips "." and "," for exactly this reason, but Nothing Technology's OCR
+also renders `£43.4m` as `£43:4m` (a colon in place of the decimal
+point) in at least one place, which the current strip set does not
+cover. Deliberately left open rather than patched inline as part of this
+comparison work, the same way the earlier "©"-and-hyphen case was
+scoped as its own, separately-agreed fix rather than folded into
+whatever task happened to surface it.
+
+Latency, measured wall-clock per question: the baseline is
+consistently fast (roughly 1-3 seconds, a single LLM call); the
+specialized agent is slower and more variable (roughly 2-16 seconds,
+reflecting its multiple retrieval and synthesis steps, including a
+16-second run for the four-filing FY2021-FY2025 turnover-trend
+question). Token cost, baseline only (see the asymmetry noted above):
+roughly 330-380 tokens per question, cheap by construction since there
+is no retrieved evidence text in the prompt.
+
+This is a genuine, if narrow, first measurement in the specialized
+system's favor on the specific dimension the project brief cares about
+most - auditability and groundedness - not a demonstration that it wins
+on every dimension (it is slower, and it answers fewer questions
+completely, precisely because it refuses rather than guesses). Do not
+read more into 12 questions than the sample supports; this is a first
+real slice, not a final verdict, and the brief's fuller comparison
+(a second, real-tool-using baseline, human-calibrated factual-accuracy
+scoring, temporal-leakage testing) remains open, deliberately unstarted
+work.
+
 ## Quality checks
 
 Most of this project's tests exercise a real local PostgreSQL instance (the
@@ -1519,7 +1632,9 @@ uv run ruff format .
 │   ├── companies_house/                # Replaceable source integration
 │   ├── db/                             # SQLAlchemy engine, sessions, and models
 │   ├── artifact_store.py               # Content-addressed source artifacts
-│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, and investigation CLI
+│   ├── baseline_agent.py               # No-retrieval general-LLM baseline
+│   ├── baseline_comparison.py          # Baseline-vs-specialized-agent comparison
+│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, investigation, and comparison CLI
 │   ├── config.py                       # Environment-backed settings
 │   ├── discriminative_query.py         # Corpus document-frequency query ranking
 │   ├── document_ingestion.py           # Filing-document acquisition and persistence

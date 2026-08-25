@@ -21,6 +21,15 @@ class ChatMessage:
     content: str
 
 
+@dataclass(frozen=True)
+class ChatUsage:
+    """Token usage the provider reported for one completion."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
 class ChatProvider(Protocol):
     """Boundary for single-turn chat completion."""
 
@@ -69,8 +78,15 @@ class _ChatChoice(BaseModel):
     message: _ChatChoiceMessage
 
 
+class _ChatUsagePayload(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
 class _ChatCompletionResponsePayload(BaseModel):
     choices: list[_ChatChoice]
+    usage: _ChatUsagePayload | None = None
 
 
 class ChatClient:
@@ -130,6 +146,19 @@ class ChatClient:
 
     async def complete(self, messages: Sequence[ChatMessage]) -> str:
         """Complete a chat, returning the assistant's response text."""
+        content, _usage = await self.complete_with_usage(messages)
+        return content
+
+    async def complete_with_usage(
+        self, messages: Sequence[ChatMessage]
+    ) -> tuple[str, ChatUsage | None]:
+        """Complete a chat, returning the response text alongside token usage.
+
+        A separate method from `complete` rather than a change to it, so the
+        `ChatProvider` protocol and every existing caller (in particular
+        `investigation_agent.py`, which only needs the text) stay untouched.
+        Usage is `None` if the provider's response omits it.
+        """
         return await self._request_completion(messages)
 
     async def complete_structured(
@@ -146,7 +175,22 @@ class ChatClient:
         `extra="forbid"` — that is the caller's responsibility, not this
         client's.
         """
-        content = await self._request_completion(
+        result, _usage = await self.complete_structured_with_usage(
+            messages, response_model
+        )
+        return result
+
+    async def complete_structured_with_usage(
+        self,
+        messages: Sequence[ChatMessage],
+        response_model: type[StructuredResponse],
+    ) -> tuple[StructuredResponse, ChatUsage | None]:
+        """Complete a structured chat, returning the result alongside token usage.
+
+        See `complete_with_usage` for why this is a separate method rather
+        than a change to `complete_structured`.
+        """
+        content, usage = await self._request_completion(
             messages,
             response_format={
                 "type": "json_schema",
@@ -158,7 +202,7 @@ class ChatClient:
             },
         )
         try:
-            return response_model.model_validate_json(content)
+            return response_model.model_validate_json(content), usage
         except ValidationError as error:
             raise ChatResponseError(
                 "Chat provider returned content that does not match the expected schema"
@@ -169,8 +213,8 @@ class ChatClient:
         messages: Sequence[ChatMessage],
         *,
         response_format: dict[str, object] | None = None,
-    ) -> str:
-        """Send one chat completion request and return the response text."""
+    ) -> tuple[str, ChatUsage | None]:
+        """Send one chat completion request and return the response text and usage."""
         if not messages:
             raise ValueError("messages must not be empty")
 
@@ -203,7 +247,16 @@ class ChatClient:
         if not payload.choices or payload.choices[0].message.content is None:
             raise ChatResponseError("Chat provider returned no completion content")
 
-        return payload.choices[0].message.content
+        usage = (
+            ChatUsage(
+                prompt_tokens=payload.usage.prompt_tokens,
+                completion_tokens=payload.usage.completion_tokens,
+                total_tokens=payload.usage.total_tokens,
+            )
+            if payload.usage is not None
+            else None
+        )
+        return payload.choices[0].message.content, usage
 
     @staticmethod
     def _raise_for_status(response: httpx2.Response) -> None:

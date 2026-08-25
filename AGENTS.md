@@ -516,8 +516,53 @@ not reliably recognize on its own. A deterministic way to detect this
 before synthesis is a real, open design question left for a future,
 deliberately scoped pass. See README.md's "A known limitation: a filing
 that structurally lacks the requested fact" section for the full detail.
-The agent-vs-general-LLM baseline comparison remains separate,
-not-yet-started work.
+
+The agent-vs-general-LLM baseline comparison milestone is now built and
+measured — a first, deliberately narrow slice, not the project brief's
+full comparison. `baseline_agent.py` answers a question with one LLM
+call and no retrieval (the brief's "General LLM" baseline, option 1 of
+3; option 2, "General LLM + web," needs real tool integration and is
+still out of scope), reusing `Finding` so a baseline citation attempt
+can be checked the same way any other citation is.
+`baseline_comparison.py` runs both the baseline and `investigate()` per
+question, measuring latency for each and checking every baseline
+citation against real `DocumentPage` rows — deterministic, no LLM judge:
+a citation either points at a real page or it does not.
+`llm_client.py`'s `ChatClient` gained `complete_with_usage`/
+`complete_structured_with_usage` (parsing the `usage` field the API
+response already included but the client discarded) as new methods
+alongside the existing ones, not changes to them, so `ChatProvider` and
+every existing caller/fake stay untouched. New CLI command:
+`compare-baseline [dataset_path]`.
+
+Run for real against both persisted datasets (12 questions): the
+baseline attempted zero citations across all 12, `evidence_sufficient=false`
+on every one — but still stated confident, specific claims in the same
+breath, at least two directly and verifiably wrong against each
+dataset's hand-verified answer (named Gymshark's company secretary as
+"Alison O'Mahony" against every filing year's real, consistent "C Reed";
+named "Richard Liu" as a Nothing Technology director, a name that
+appears nowhere in its real filings; misstated Nothing Technology's
+FY2023 revenue/loss as £45m/£20m against real £49.6m/£59.4m). The
+specialized agent answered 5 of 12 questions with a claim matching the
+dataset's own verified answer exactly, and correctly refused the other
+7 rather than serve something unverified — 2 of those are the
+already-documented FY2021-P&L limitation above; a 3rd surfaced yet
+another distinct, unhandled OCR substitution (`£43:4m` for `£43.4m`, a
+colon in place of the decimal point), deliberately left open rather
+than patched inline mid-comparison, the same way the earlier
+"©"-and-hyphen fix was scoped as its own agreed change. Latency:
+baseline ~1-3s (one call); specialized ~2-16s (multi-step). Cost is
+measured for the baseline only in this slice — `investigate()` itself
+was not changed to use the new usage-aware client methods, an
+asymmetry recorded rather than implied away. See README.md's "Compare
+the specialized agent against a general-LLM baseline" section for the
+full detail. This is a first real measurement in the specialized
+system's favor on auditability/groundedness specifically, not a claim
+it wins on every dimension, and not a substitute for the brief's fuller
+comparison (a real second baseline, human-calibrated factual-accuracy
+scoring, temporal-leakage testing), which remains separate, deliberately
+unstarted work.
 
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the

@@ -50,6 +50,7 @@ class EvaluationDataset:
     """A labelled retrieval evaluation corpus for one company."""
 
     company_number: str
+    company_name: str
     questions: tuple[EvaluationQuestion, ...]
 
 
@@ -72,7 +73,9 @@ def load_evaluation_dataset(path: Path) -> EvaluationDataset:
         for question in payload["questions"]
     )
     return EvaluationDataset(
-        company_number=payload["company_number"], questions=questions
+        company_number=payload["company_number"],
+        company_name=payload["company_name"],
+        questions=questions,
     )
 
 
@@ -86,6 +89,7 @@ def with_derived_queries(dataset: EvaluationDataset) -> EvaluationDataset:
     """
     return EvaluationDataset(
         company_number=dataset.company_number,
+        company_name=dataset.company_name,
         questions=tuple(
             replace(question, query=derive_query(question.text))
             for question in dataset.questions
@@ -111,7 +115,11 @@ async def with_discriminative_queries(
             for question in dataset.questions
         ]
     )
-    return EvaluationDataset(company_number=dataset.company_number, questions=questions)
+    return EvaluationDataset(
+        company_number=dataset.company_number,
+        company_name=dataset.company_name,
+        questions=questions,
+    )
 
 
 @dataclass(frozen=True)

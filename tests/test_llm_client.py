@@ -13,6 +13,7 @@ from company_researcher.llm_client import (
     ChatMessage,
     ChatRateLimitError,
     ChatResponseError,
+    ChatUsage,
 )
 
 
@@ -193,6 +194,82 @@ async def test_complete_structured_rejects_content_that_fails_validation() -> No
             await client.complete_structured(
                 [ChatMessage(role="user", content="Is this approved?")], _Verdict
             )
+
+
+@pytest.mark.asyncio
+async def test_complete_with_usage_returns_token_counts_when_present() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "Hi there."}}],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 4,
+                    "total_tokens": 16,
+                },
+            },
+            request=request,
+        )
+
+    async with create_client(handler) as client:
+        content, usage = await client.complete_with_usage(
+            [ChatMessage(role="user", content="Hello")]
+        )
+
+    assert content == "Hi there."
+    assert usage == ChatUsage(prompt_tokens=12, completion_tokens=4, total_tokens=16)
+
+
+@pytest.mark.asyncio
+async def test_complete_with_usage_returns_none_when_provider_omits_it() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "Hi."}}]},
+            request=request,
+        )
+
+    async with create_client(handler) as client:
+        _content, usage = await client.complete_with_usage(
+            [ChatMessage(role="user", content="Hello")]
+        )
+
+    assert usage is None
+
+
+@pytest.mark.asyncio
+async def test_complete_structured_with_usage_returns_result_and_token_counts() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {"approved": True, "reason": "Evidence is sufficient."}
+                            ),
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 30,
+                    "completion_tokens": 8,
+                    "total_tokens": 38,
+                },
+            },
+            request=request,
+        )
+
+    async with create_client(handler) as client:
+        verdict, usage = await client.complete_structured_with_usage(
+            [ChatMessage(role="user", content="Is this approved?")], _Verdict
+        )
+
+    assert verdict == _Verdict(approved=True, reason="Evidence is sufficient.")
+    assert usage == ChatUsage(prompt_tokens=30, completion_tokens=8, total_tokens=38)
 
 
 def test_from_settings_requires_api_key() -> None:

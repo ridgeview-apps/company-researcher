@@ -8,6 +8,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from company_researcher.artifact_store import ArtifactStoreError, LocalArtifactStore
+from company_researcher.baseline_comparison import QuestionComparison, run_comparison
 from company_researcher.companies_house import (
     CompaniesHouseClient,
     CompaniesHouseDocumentClient,
@@ -189,6 +190,20 @@ def build_parser() -> argparse.ArgumentParser:
             "Companies House company number to scope retrieval to "
             f"(default: {DEFAULT_INVESTIGATION_COMPANY_NUMBER}, Gymshark Ltd)."
         ),
+    )
+
+    comparison_parser = subparsers.add_parser(
+        "compare-baseline",
+        help=(
+            "Compare a no-retrieval general-LLM baseline against the "
+            "specialized investigation agent over a labelled question set."
+        ),
+    )
+    comparison_parser.add_argument(
+        "dataset_path",
+        nargs="?",
+        default=DEFAULT_EVALUATION_DATASET,
+        help=f"Path to an evaluation dataset (default: {DEFAULT_EVALUATION_DATASET}).",
     )
 
     return parser
@@ -459,6 +474,72 @@ def run_investigation(question: str, company_number: str) -> str:
     return asyncio.run(investigate_command(question, company_number))
 
 
+def _format_comparison_report(comparisons: list[QuestionComparison]) -> str:
+    """Render a per-question baseline-vs-specialized report for manual review.
+
+    Only latency, token usage, and citation realism are reported as
+    computed numbers here - factual accuracy and completeness are
+    deliberately not scored automatically (see README.md's baseline-
+    comparison section for why); a reader compares each printed claim
+    against the dataset's own hand-verified ground truth by eye.
+    """
+    lines = []
+    for comparison in comparisons:
+        lines.append(f"{comparison.question_id}: {comparison.question_text}")
+
+        baseline = comparison.baseline_finding
+        real_count = sum(1 for r in comparison.baseline_citation_realism if r.exists)
+        usage_text = (
+            f", tokens={comparison.baseline_usage.total_tokens}"
+            if comparison.baseline_usage is not None
+            else ""
+        )
+        lines.append(
+            f"  baseline    [{comparison.baseline_latency_seconds:.2f}s{usage_text}] "
+            f"evidence_sufficient={baseline.evidence_sufficient} "
+            f"citations={len(baseline.citations)} ({real_count} real)"
+        )
+        lines.append(f"    claim: {baseline.claim}")
+
+        if comparison.specialized_error is not None:
+            lines.append(
+                f"  specialized [{comparison.specialized_latency_seconds:.2f}s] "
+                f"ERROR: {comparison.specialized_error}"
+            )
+        elif comparison.specialized_finding is not None:
+            specialized = comparison.specialized_finding
+            lines.append(
+                f"  specialized [{comparison.specialized_latency_seconds:.2f}s] "
+                f"evidence_sufficient={specialized.evidence_sufficient} "
+                f"citations={len(specialized.citations)}"
+            )
+            lines.append(f"    claim: {specialized.claim}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip("\n")
+
+
+async def compare_baseline_command(dataset_path: str) -> str:
+    """Compare the no-retrieval baseline against the specialized agent over a dataset."""
+    dataset = load_evaluation_dataset(Path(dataset_path))
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            async with ChatClient.from_settings(settings) as chat_client:
+                comparisons = await run_comparison(session, chat_client, dataset)
+    finally:
+        await engine.dispose()
+
+    return _format_comparison_report(comparisons)
+
+
+def run_baseline_comparison(dataset_path: str) -> str:
+    """Run one baseline comparison from the synchronous CLI."""
+    return asyncio.run(compare_baseline_command(dataset_path))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Company Researcher command-line interface."""
     args = build_parser().parse_args(argv)
@@ -478,6 +559,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = run_ingestion(args.company_number)
         elif args.command == "investigate":
             output = run_investigation(args.question, args.company_number)
+        elif args.command == "compare-baseline":
+            output = run_baseline_comparison(args.dataset_path)
         else:
             output = run_inspection(args.company_number)
     except CompaniesHouseConfigurationError as error:
