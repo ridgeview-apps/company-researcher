@@ -249,12 +249,21 @@ rather than being silently skipped — extracting that comparative-column
 data is a distinct, unaddressed gap. This was verified with four new unit
 tests against real Postgres (a fake chat client, since none of what they
 prove — graph routing, retrieval scoping, cross-sub-result citation
-validation — requires a real LLM call); it has **not** yet been run
-against a real LLM or the persisted Gymshark corpus the way the
-single-year fiscal-year fix was, and that real-corpus verification is the
-natural next step before this is as solidly evidenced as the single-year
-path. See README.md's "Multi-year investigation questions" section for
-the full detail.
+validation — requires a real LLM call), then re-verified with two real
+runs against the real LLM and the persisted Gymshark corpus (a q2-shaped
+turnover trend question and a q4-shaped directors question). Both
+completed with zero `InvestigationAgentError`s and zero cross-year
+citation leaks across all 10 real LLM calls between them, and the
+turnover run's per-year figures matched the evaluation dataset's answer
+key exactly, including correctly reporting no FY2024 figure. The
+directors run surfaced one genuine, still-open limitation: it never
+found the company secretary, because the one query shared across all
+years retrieved each filing's directors'-report page rather than its
+company-information page (where the secretary is recorded) — a
+retrieval-precision gap, not a citation/validation bug, left open rather
+than prompt-patched around a single observed run. See README.md's
+"Multi-year investigation questions" and "Observed real-run result"
+sections for the full detail.
 
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the

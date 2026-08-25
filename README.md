@@ -872,11 +872,49 @@ real LLM call is involved in proving the graph's routing, retrieval
 scoping, or citation-validation logic): decomposition into one isolated
 pass per year, a year with no filing still getting its own pass, a
 per-year citation validated against only that year's own pages, and a
-fabricated aggregate citation being rejected. **It has not yet been run
-against a real LLM or the persisted Gymshark corpus** the way the
-single-year fiscal-year fix was (see the measured 8-run results above) —
-that real-corpus verification is the natural next step before this is
-considered as solidly evidenced as the single-year path.
+fabricated aggregate citation being rejected.
+
+### Observed real-run result
+
+The multi-year path was then run against the real LLM and the persisted
+Gymshark corpus with two questions matching q2 and q4's shape. Both
+completed successfully with no `InvestigationAgentError` — every citation
+across both runs (4 per-year passes plus 1 aggregation, twice) validated
+against the pages actually retrieved for its year, and no citation crossed
+into another year's filing.
+
+The turnover question ("How did Gymshark's turnover change year-over-year
+from FY2021 through FY2025?") returned the correct figure for every year
+that has a filing (FY2021 GBP437,629k, FY2022 GBP349,054k, FY2023
+GBP403,818k, FY2025 GBP490,142k — all matching the evaluation dataset's
+manually-verified answer key) and correctly reported no FY2024 figure,
+matching the known gap documented above. One genuine nuance, recorded
+rather than smoothed over: the FY2022 sub-finding's own citation (from its
+own filing, `document_extraction_id=44`) quotes a geographical turnover
+breakdown that does not itself state the £349,054k headline total; that
+number is instead corroborated by a second, separately listed citation —
+the FY2023 filing's comparative column (`document_extraction_id=42`, "2023
+2022 ... Turnover 403,818 349,054"). Both citations are real, valid, and
+independently verified, so this is not a validation failure, but it shows
+the aggregator can lean on an adjacent year's comparative-column citation
+to supply a year's headline number rather than that year's own filing
+citing it as cleanly.
+
+The directors question ("Who were Gymshark's directors and company
+secretary according to each set of annual accounts from FY2021 to
+FY2025?") also completed cleanly and named materially correct
+directors for every year with more granular resignation/appointment
+detail than the evaluation dataset's hand-picked answer (which draws from
+each filing's company-information page rather than its directors'
+report), and correctly reported no FY2024 information. It surfaced one
+genuine, still-open limitation, though: it never found the company
+secretary (present as "C Reed" on every filing's company-information
+page, per the evaluation dataset), because the one query shared across
+all years retrieved each filing's directors'-report page instead of its
+company-information page. Both pages are real and on-topic; this is a
+retrieval-precision gap in sharing a single generated query across years,
+not a citation or validation bug, and is left open rather than
+prompt-patched around one observed run.
 
 A known, deliberately accepted gap: FY2024 has no filing of its own in the
 persisted corpus — its only figure lives as a comparative column inside
