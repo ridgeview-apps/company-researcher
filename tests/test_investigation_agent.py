@@ -188,6 +188,15 @@ def test_normalize_for_quote_check_still_distinguishes_different_numbers() -> No
     )
 
 
+def test_normalize_for_quote_check_tolerates_a_stray_symbol_at_a_linewrap_hyphen() -> (
+    None
+):
+    """Regression test for a real observed failure on Nothing Technology's corpus: OCR inserts a stray '©' character and a line-wrap hyphen (e.g. "debt ©\n-fundraising" for "debt fundraising"), from a PDF carrying DocuSign watermark artifacts Gymshark's filings did not have."""
+    page = "a £30m debt ©\n-fundraising in order to support working capital"
+    quote = "a £30m debt fundraising in order to support working capital"
+    assert _normalize_for_quote_check(quote) in _normalize_for_quote_check(page)
+
+
 @pytest_asyncio.fixture
 async def session() -> AsyncIterator[AsyncSession]:
     engine = create_database_engine(Settings(_env_file=None))  # type: ignore[call-arg]
@@ -525,6 +534,53 @@ async def test_investigate_excludes_a_different_fiscal_years_filing_entirely(
     )
 
     assert finding == correct_finding
+
+
+@pytest.mark.asyncio
+async def test_investigate_falls_back_to_unrestricted_search_when_named_year_matches_no_filing(
+    session: AsyncSession, company: Company
+) -> None:
+    """A named year that matches no filing's accounting period must not zero out retrieval entirely.
+
+    Regression test for a real observed failure (see README.md): a
+    question naming a year that refers to something other than an
+    accounting period (e.g. a charge-creation date) retrieved nothing,
+    because document_extraction_ids_for_fiscal_year correctly reports no
+    filing has that accounting period, but search_pages treats an empty
+    document_extraction_ids list as "match nothing" rather than "no
+    restriction". The only filing in this test has a different accounting
+    period than the year named in the question, so the fix must fall back
+    to searching it unrestricted rather than returning zero pages.
+    """
+    extraction = await _create_filing_with_pages(
+        session,
+        "investigation-transaction-year-fallback",
+        ["Tango uniform victor whiskey disclosure, dated in December 2024."],
+        made_up_date="2023-07-31",
+    )
+    expected_finding = Finding(
+        claim="Tango uniform victor whiskey was disclosed in December 2024.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="disclosure, dated in December 2024",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="tango uniform victor whiskey disclosure", finding=expected_finding
+    )
+
+    finding = await investigate(
+        session,
+        chat_client,
+        "What did tango uniform victor whiskey disclose in December 2024?",
+        company_number=TEST_COMPANY_NUMBER,
+    )
+
+    assert finding == expected_finding
 
 
 @pytest.mark.asyncio

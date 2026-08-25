@@ -226,15 +226,19 @@ def _normalize_for_quote_check(text: str) -> str:
     McElhinney"); and the model itself naturally joins a page's newline-
     separated list (e.g. a list of directors, one name per line) into a
     comma-separated prose sentence when quoting it, terminated with a
-    period the source never had. None of these involve a different word or
-    digit sequence - only whitespace and punctuation - so every run of
-    whitespace is removed entirely rather than merely collapsed, commas
-    and periods are stripped, curly braces are canonicalized to
-    parentheses, and stray underscore "leader" characters (e.g.
-    "__260.674") are stripped too. This is a deliberate trade-off: it
-    makes the check slightly more permissive (in principle two genuinely
-    different numbers, or two adjacent but unrelated words, could collide
-    once whitespace and separators between them are removed), which is
+    period the source never had. A second company's own OCR noise added a
+    fifth case: a stray "©" character and a line-wrap hyphen inserted
+    mid-word (e.g. "debt ©\n-fundraising" for "debt fundraising", from a
+    PDF carrying DocuSign watermark artifacts Gymshark's filings did not
+    have). None of these involve a different word or digit sequence - only
+    whitespace and punctuation - so every run of whitespace is removed
+    entirely rather than merely collapsed, commas, periods, and hyphens
+    are stripped, curly braces are canonicalized to parentheses, and
+    stray underscore "leader" characters (e.g. "__260.674") and "©"
+    are stripped too. This is a deliberate trade-off: it makes the check
+    slightly more permissive (in principle two genuinely different
+    numbers, or two adjacent but unrelated words, could collide once
+    whitespace and separators between them are removed), which is
     acceptable because this check only verifies quote *fidelity* to real
     page text - catching a wrong page or fabricated content - not the
     numeric or semantic correctness of the claim built from it, which is a
@@ -242,7 +246,7 @@ def _normalize_for_quote_check(text: str) -> str:
     example in the same README section).
     """
     normalized = text.replace("{", "(").replace("}", ")")
-    for character in (",", ".", "_"):
+    for character in (",", ".", "_", "-", "©"):
         normalized = normalized.replace(character, "")
     return "".join(normalized.split()).lower()
 
@@ -421,9 +425,31 @@ def _build_graph(
         fiscal_year = state.get("fiscal_year")
         document_extraction_ids = None
         if fiscal_year is not None:
-            document_extraction_ids = await document_extraction_ids_for_fiscal_year(
+            candidate_ids = await document_extraction_ids_for_fiscal_year(
                 session, fiscal_year
             )
+            # An empty result means no filing has an accounting period in
+            # this year -- which happens not only for a genuine reporting
+            # gap, but also when the named year refers to something other
+            # than an accounting period at all (e.g. a charge-creation
+            # date), a case document_extraction_ids_for_fiscal_year cannot
+            # distinguish from the genuine gap case, since it only knows
+            # about made_up_date. Passing an empty list to search_pages
+            # would match zero pages instead of no restriction, silently
+            # discarding real evidence for a question this system can
+            # answer (observed on a real Nothing Technology run: a
+            # question naming "December 2024" as a charge date, not a
+            # fiscal year, retrieved nothing). Falling back to no
+            # restriction accepts a small risk of over-broad retrieval in
+            # exchange for not failing closed on an answerable question;
+            # this is deliberately narrower than a change to
+            # document_extraction_ids_for_fiscal_year itself, which would
+            # also affect gather_year_findings_node's multi-year path,
+            # where an empty result for a genuinely absent year (e.g.
+            # Gymshark's FY2024 gap) must keep reporting
+            # evidence_sufficient=False for that year, not silently widen
+            # to every year's filings.
+            document_extraction_ids = candidate_ids or None
         matches = await search_pages(
             session,
             state["generated_query"],

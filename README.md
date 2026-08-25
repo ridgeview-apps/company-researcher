@@ -1204,6 +1204,85 @@ and has not been done - a prompt tightened against 3-6 observed runs is
 not a substitute for it, and revisiting entailment checking should wait
 for that dedicated effort rather than another ad hoc prompt pass.
 
+### Running the agent against a second company: Nothing Technology
+
+With Nothing Technology ingested, company-scoped, and covered by its own
+evaluation dataset (see
+[Measure the second-company retrieval baseline: Nothing Technology](#measure-the-second-company-retrieval-baseline-nothing-technology)),
+`investigate` was run against it for the first time with a real
+financing/charges question:
+
+```bash
+uv run company-researcher investigate "What significant financing-related events has Nothing Technology been involved in, and does the evidence support interpreting the charges registered in December 2024 as a sign of financial distress?" --company-number 12984564
+```
+
+The first real run returned `evidence_sufficient=false` with zero
+citations, despite the corpus containing strong, directly relevant
+evidence (this exact topic is what the evaluation dataset's own
+`q2-registered-charges-2024-2026` question, measured just above, scores
+Recall@5=0.83 on). Diagnosed rather than assumed, with two direct
+checks: `extract_fiscal_years()` pulls `"2024"` out of the question's
+"registered in December 2024" phrase, and
+`document_extraction_ids_for_fiscal_year(session, "2024")` resolves to
+an empty list, confirmed directly against the database - no filing for
+either persisted company has an accounting period ending in 2024
+(Nothing Technology's own periods are FY2021/FY2022/FY2023, and its
+`MR01` charge filings, unlike its accounts filings, have no accounting
+period at all). `search_pages` treats an empty
+`document_extraction_ids` list as "match nothing," not "no
+restriction," so this single-year fiscal-year-forcing mechanism -
+built and validated entirely against Gymshark's accounts-only corpus,
+where every year named in a question really does refer to an accounting
+period - silently zeroed out retrieval before the generated query was
+even issued. This is a new failure mode, not a repeat of the company-
+scoping bugs above: it is specifically about a year in the question
+referring to something other than an accounting period (an event/charge-
+creation date), which Gymshark's single-document-type corpus never
+exercised.
+
+`retrieve_evidence_node` (`investigation_agent.py`) now falls back to no
+restriction when `document_extraction_ids_for_fiscal_year` returns
+empty, deliberately scoped to only the single-year path: the multi-year
+`gather_year_findings_node` path is untouched, so a genuinely absent
+year within a named range (e.g. Gymshark's FY2024 comparative-column
+gap, see above) still correctly reports `evidence_sufficient=false` for
+that year rather than silently widening to every year's filings. A new
+regression test
+(`test_investigate_falls_back_to_unrestricted_search_when_named_year_matches_no_filing`)
+covers this. Re-running the same question after the fix retrieved real
+evidence, but surfaced a second, distinct real-run failure: a citation
+to the correct page (the FY2023 directors' report's post-reporting-date
+disclosure) was rejected by `_find_quote_mismatches` even though the
+model's quote was accurate. Diagnosed by pulling the actual page text
+and diffing it against the rejected quote character-by-character (the
+same method used for every prior quote-verification failure): the page
+reads `"a £30m debt ©\n-fundraising in order"`, where OCR inserted a
+stray "©" character and a line-wrap hyphenation break exactly where the
+model's clean quote says `"debt fundraising"` - genuine content, an OCR
+scanning artifact from a PDF carrying DocuSign watermark elements
+Gymshark's filings never had, not a fabrication.
+
+This directly revisits a decision already recorded above: after fixing
+four OCR-noise patterns for Gymshark's corpus, this project deliberately
+stopped chasing further individual quirks rather than treat quote
+verification as open-ended whack-a-mole against one corpus's scanner
+noise. Ingesting a second, independently-scanned company's filings is a
+different situation - it surfaces that corpus's *own* real, distinct OCR
+artifacts, not another quirk of the same corpus - so
+`_normalize_for_quote_check` now also strips "©" and "-" (hyphens),
+alongside the existing comma/period/underscore/brace handling. A new
+regression test
+(`test_normalize_for_quote_check_tolerates_a_stray_symbol_at_a_linewrap_hyphen`)
+uses this exact real page/quote pair. Re-running the question three more
+times against the real LLM and corpus after both fixes completed with
+zero `InvestigationAgentError`s across all three runs, each producing a
+distinct but consistently well-grounded, appropriately hedged claim
+(e.g. "the evidence does not support interpreting these charges as a
+sign of financial distress" - correctly declining to over-interpret
+routine facility security as a distress signal), and the existing
+default Gymshark investigation was re-run and confirmed unaffected by
+either fix.
+
 ## Scoping retrieval to one company
 
 `search_pages()` in [`lexical_search.py`](src/company_researcher/lexical_search.py)

@@ -445,7 +445,47 @@ even in this smaller, mixed-document-type corpus). Two new tests
 (`test_load_evaluation_dataset_parses_nothing_technology_fixture`,
 `test_run_evaluation_resolves_the_nothing_technology_fixture_against_real_data`)
 mirror the existing Gymshark dataset tests. Evaluation-dataset
-construction for Nothing Technology is now done; the agent-vs-general-LLM
+construction for Nothing Technology is now done.
+
+`investigate` was then run against Nothing Technology for the first
+time with a real financing/charges question, surfacing and fixing two
+new, real-run limitations neither company-scoping nor the evaluation
+dataset alone exercised. First: a question naming "December 2024" (a
+charge-creation date, not an accounting period) retrieved nothing,
+because `extract_fiscal_years()` matched the digit "2024" and
+`document_extraction_ids_for_fiscal_year` correctly resolved it to zero
+filings (no filing for either company has a 2024 accounting period) —
+but `search_pages` treats an empty `document_extraction_ids` list as
+"match nothing," not "no restriction," silently zeroing out retrieval
+for an answerable question. Fixed by falling back to no restriction in
+`retrieve_evidence_node`'s single-year path specifically, when the
+named year matches no filing — deliberately not changed in
+`gather_year_findings_node`'s multi-year path, where an empty result for
+a genuinely absent year (Gymshark's FY2024 gap) must keep reporting
+`evidence_sufficient=false` for that year rather than silently widening
+to every year's filings. Second, after that fix retrieved real evidence:
+a citation to the correct page was rejected by `_find_quote_mismatches`
+even though the quote was accurate, diagnosed the same way as every
+prior quote-verification failure — the page text contained a stray "©"
+character and a line-wrap hyphen (OCR noise from Nothing Technology's
+own DocuSign-watermarked PDFs, distinct from anything in Gymshark's
+corpus) exactly where the model's clean quote said "debt fundraising."
+`_normalize_for_quote_check` now also strips "©" and "-". This
+deliberately revisits, rather than ignores, the earlier documented
+decision to stop chasing individual OCR quirks — that decision was
+scoped to Gymshark's own corpus after four real fixes, not to OCR noise
+in general; a second, independently-scanned company's filings carry
+their own real artifacts, not another quirk of the first corpus. Two new
+regression tests
+(`test_investigate_falls_back_to_unrestricted_search_when_named_year_matches_no_filing`,
+`test_normalize_for_quote_check_tolerates_a_stray_symbol_at_a_linewrap_hyphen`)
+cover both fixes with the real observed cases. Re-running the question
+three more times after both fixes completed with zero
+`InvestigationAgentError`s, each producing a distinct but consistently
+well-grounded, appropriately hedged claim; the default Gymshark
+investigation was re-run and confirmed unaffected by either change. See
+README.md's "Running the agent against a second company: Nothing
+Technology" section for the full detail. The agent-vs-general-LLM
 baseline comparison remains separate, not-yet-started work.
 
 Work incrementally. Challenge and refine each step of an agreed milestone
