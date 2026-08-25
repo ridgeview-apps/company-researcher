@@ -1283,6 +1283,57 @@ routine facility security as a distress signal), and the existing
 default Gymshark investigation was re-run and confirmed unaffected by
 either fix.
 
+### A known limitation: a filing that structurally lacks the requested fact
+
+Testing the multi-year investigation path (see
+[Multi-year investigation questions](#multi-year-investigation-questions))
+against Nothing Technology with `"How did Nothing Technology's revenue
+change from FY2021 through FY2023?"` surfaced a genuine, reproducible
+limitation, distinct from both fixes above -- diagnosed but deliberately
+left undocumented-and-unfixed for now rather than papered over with
+another prompt tweak.
+
+Nothing Technology's FY2021 accounts took a small-company audit exemption
+that explicitly excludes the Profit and Loss account (the filing itself
+states "the option not to file the Profit and Loss Account has been
+taken"), so the FY2021 per-year retrieval pass's only available evidence
+-- a balance sheet, with no revenue figure anywhere in it -- structurally
+cannot answer a revenue question. Across three real runs, rather than
+setting `evidence_sufficient=false` as `_FINDING_SYSTEM_PROMPT` instructs
+when the evidence is insufficient, the model instead fabricated a
+citation each time: once citing "Trade debtors 1,218,206" as though it
+were revenue, another time splicing a real 2022 revenue-breakdown figure
+together with an unrelated 2021 exchange-losses figure from a different
+table further down the same page. Both were confirmed as genuine
+non-contiguous splices by pulling the real page text and checking
+directly, not assumed -- exactly the failure mode `_find_quote_mismatches`
+is designed to catch, and it caught both, even after a self-correction
+retry, correctly raising `InvestigationAgentError` rather than serving a
+fabricated citation.
+
+This is a different category of problem than the two fixes above. Those
+were deterministic pipeline bugs (a filtering gap, a normalizer gap).
+This is the model's own reliability at following its "report insufficient
+evidence rather than guess" instruction when *partial-but-wrong* evidence
+is present -- the same category of problem the reverted citation-
+entailment-checking milestone already ran into and found unreliable to
+chase with prompt tuning across a handful of observed runs (see "A
+reverted attempt at citation entailment checking" above). Rather than
+repeat that mistake, this is recorded as a genuine, diagnosed, currently
+unresolved limitation, the same way Gymshark's own FY2024 comparative-
+column gap is recorded above -- except this is a materially different
+case: FY2024 there had *no filing at all* for that year, which the system
+already handles gracefully (an empty per-year retrieval pass correctly
+reports `evidence_sufficient=false` with no fabrication). Here, a filing
+*does* exist for the named year, but structurally lacks the specific
+disclosure the question asks about -- a case the system does not
+currently distinguish from "the answer just wasn't in the top
+`context_pages` retrieved," and the model does not reliably recognize on
+its own. A deterministic (non-LLM-judge) way to detect "this year's only
+retrieved evidence cannot structurally answer this question" before
+synthesis is a real, open design question, not a quick patch, and is left
+for a future, deliberately scoped pass rather than solved here.
+
 ## Scoping retrieval to one company
 
 `search_pages()` in [`lexical_search.py`](src/company_researcher/lexical_search.py)

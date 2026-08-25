@@ -485,8 +485,39 @@ three more times after both fixes completed with zero
 well-grounded, appropriately hedged claim; the default Gymshark
 investigation was re-run and confirmed unaffected by either change. See
 README.md's "Running the agent against a second company: Nothing
-Technology" section for the full detail. The agent-vs-general-LLM
-baseline comparison remains separate, not-yet-started work.
+Technology" section for the full detail.
+
+Testing the multi-year investigation path against Nothing Technology
+next ("How did Nothing Technology's revenue change from FY2021 through
+FY2023?") surfaced a third real, reproducible failure, deliberately
+documented rather than fixed. Nothing Technology's FY2021 accounts took
+a small-company audit exemption that excludes the Profit and Loss
+account entirely, so the FY2021 per-year retrieval pass's only evidence
+structurally cannot answer a revenue question. Across three real runs
+the model fabricated a citation each time instead of reporting
+`evidence_sufficient=false` as instructed (once mislabelling "Trade
+debtors" as revenue, once splicing a real 2022 revenue figure together
+with an unrelated 2021 exchange-losses figure from a different table on
+the same page) — confirmed as genuine non-contiguous splices by pulling
+the real page text directly, not assumed, and correctly caught by
+`_find_quote_mismatches` both times, even after retry. Unlike the two
+fixes above (deterministic pipeline bugs), this is the model's own
+reliability at following its "report insufficient evidence" instruction
+when partial-but-wrong evidence is present — the same category of
+problem the reverted citation-entailment-checking milestone already
+found unreliable to chase with prompt tuning against a handful of
+observed runs. Rather than repeat that mistake, this is recorded as a
+genuine, diagnosed, currently unresolved limitation — distinct from
+Gymshark's FY2024 gap (no filing at all for that year, handled
+gracefully already): here a filing exists but structurally lacks the
+requested disclosure, a case the system does not currently distinguish
+from "the answer wasn't in the retrieved context," and the model does
+not reliably recognize on its own. A deterministic way to detect this
+before synthesis is a real, open design question left for a future,
+deliberately scoped pass. See README.md's "A known limitation: a filing
+that structurally lacks the requested fact" section for the full detail.
+The agent-vs-general-LLM baseline comparison remains separate,
+not-yet-started work.
 
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
