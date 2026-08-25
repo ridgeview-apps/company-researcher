@@ -18,6 +18,7 @@ from company_researcher.db.session import create_database_engine, create_session
 from company_researcher.lexical_search import search_pages
 
 TEST_COMPANY_NUMBER = "TE000006"
+OTHER_COMPANY_NUMBER = "TE000007"
 
 
 @pytest_asyncio.fixture
@@ -29,12 +30,13 @@ async def session() -> AsyncIterator[AsyncSession]:
             yield db_session
     finally:
         async with session_factory() as cleanup_session:
-            await cleanup_session.execute(
-                delete(Filing).where(Filing.company_number == TEST_COMPANY_NUMBER)
-            )
-            await cleanup_session.execute(
-                delete(Company).where(Company.company_number == TEST_COMPANY_NUMBER)
-            )
+            for company_number in (TEST_COMPANY_NUMBER, OTHER_COMPANY_NUMBER):
+                await cleanup_session.execute(
+                    delete(Filing).where(Filing.company_number == company_number)
+                )
+                await cleanup_session.execute(
+                    delete(Company).where(Company.company_number == company_number)
+                )
             await cleanup_session.commit()
         await engine.dispose()
 
@@ -44,15 +46,14 @@ async def _create_pages(
     texts: list[str],
     *,
     transaction_id: str = "lexical-search-transaction",
+    company_number: str = TEST_COMPANY_NUMBER,
 ) -> DocumentExtraction:
     now = datetime.now(UTC)
-    company_statement = select(Company).where(
-        Company.company_number == TEST_COMPANY_NUMBER
-    )
+    company_statement = select(Company).where(Company.company_number == company_number)
     company = (await session.execute(company_statement)).scalar_one_or_none()
     if company is None:
         company = Company(
-            company_number=TEST_COMPANY_NUMBER,
+            company_number=company_number,
             company_name="LEXICAL SEARCH TEST LIMITED",
             type="ltd",
             sic_codes=[],
@@ -61,7 +62,7 @@ async def _create_pages(
         )
         session.add(company)
     filing = Filing(
-        company_number=TEST_COMPANY_NUMBER,
+        company_number=company_number,
         transaction_id=transaction_id,
         category="accounts",
         type="AA",
@@ -203,6 +204,32 @@ async def test_search_pages_restricts_to_given_document_extraction_ids(
 
     matches = await search_pages(
         session, "zephyrion turnover", limit=500, document_extraction_ids=[allowed.id]
+    )
+    matched_extraction_ids = {m.document_extraction_id for m in matches}
+
+    assert allowed.id in matched_extraction_ids
+    assert excluded.id not in matched_extraction_ids
+
+
+@pytest.mark.asyncio
+async def test_search_pages_restricts_to_given_company_number(
+    session: AsyncSession,
+) -> None:
+    allowed = await _create_pages(
+        session,
+        ["Zephyrion turnover figure for the allowed company."],
+        transaction_id="lexical-search-company-allowed",
+        company_number=TEST_COMPANY_NUMBER,
+    )
+    excluded = await _create_pages(
+        session,
+        ["Zephyrion turnover figure for the excluded company."],
+        transaction_id="lexical-search-company-excluded",
+        company_number=OTHER_COMPANY_NUMBER,
+    )
+
+    matches = await search_pages(
+        session, "zephyrion turnover", limit=500, company_number=TEST_COMPANY_NUMBER
     )
     matched_extraction_ids = {m.document_extraction_id for m in matches}
 

@@ -55,6 +55,7 @@ DEFAULT_INVESTIGATION_QUESTION = (
     "What did the directors identify as Gymshark's going-concern position "
     "in the FY2023 accounts, and does the evidence support that?"
 )
+DEFAULT_INVESTIGATION_COMPANY_NUMBER = "08130873"
 
 
 class DocumentExtractionCommandError(Exception):
@@ -179,6 +180,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Natural-language investigation question (default: a Gymshark "
             "FY2023 going-concern question)."
+        ),
+    )
+    investigation_parser.add_argument(
+        "--company-number",
+        default=DEFAULT_INVESTIGATION_COMPANY_NUMBER,
+        help=(
+            "Companies House company number to scope retrieval to "
+            f"(default: {DEFAULT_INVESTIGATION_COMPANY_NUMBER}, Gymshark Ltd)."
         ),
     )
 
@@ -421,7 +430,7 @@ def run_retrieval_evaluation(
     )
 
 
-async def investigate_command(question: str) -> str:
+async def investigate_command(question: str, company_number: str) -> str:
     """Run the investigation agent for one question and serialize its finding."""
     settings = Settings()
     engine = create_database_engine(settings)
@@ -429,12 +438,15 @@ async def investigate_command(question: str) -> str:
         session_factory = create_session_factory(engine)
         async with session_factory() as session:
             async with ChatClient.from_settings(settings) as chat_client:
-                finding = await investigate(session, chat_client, question)
+                finding = await investigate(
+                    session, chat_client, question, company_number
+                )
     finally:
         await engine.dispose()
 
     payload = {
         "question": question,
+        "company_number": company_number,
         "claim": finding.claim,
         "evidence_sufficient": finding.evidence_sufficient,
         "citations": [citation.model_dump() for citation in finding.citations],
@@ -442,9 +454,9 @@ async def investigate_command(question: str) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
-def run_investigation(question: str) -> str:
+def run_investigation(question: str, company_number: str) -> str:
     """Run one investigation from the synchronous CLI."""
-    return asyncio.run(investigate_command(question))
+    return asyncio.run(investigate_command(question, company_number))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -465,7 +477,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "ingest":
             output = run_ingestion(args.company_number)
         elif args.command == "investigate":
-            output = run_investigation(args.question)
+            output = run_investigation(args.question, args.company_number)
         else:
             output = run_inspection(args.company_number)
     except CompaniesHouseConfigurationError as error:

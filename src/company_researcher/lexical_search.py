@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from sqlalchemy import Text, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from company_researcher.db.models import DocumentPage
+from company_researcher.db.models import (
+    DocumentExtraction,
+    DocumentPage,
+    Filing,
+    FilingDocument,
+)
 
 _TEXT_SEARCH_CONFIGURATION = "english"
 
@@ -24,6 +29,7 @@ async def search_pages(
     *,
     limit: int,
     document_extraction_ids: Sequence[int] | None = None,
+    company_number: str | None = None,
 ) -> list[PageMatch]:
     """Rank document pages by PostgreSQL full-text search relevance to `query`.
 
@@ -33,9 +39,12 @@ async def search_pages(
 
     `document_extraction_ids`, when given, restricts candidates to those
     extractions before ranking -- e.g. scoping to filings for one fiscal
-    year. Defaults to no restriction so existing callers (in particular
-    retrieval evaluation, whose measured baseline must stay unaffected) are
-    unchanged.
+    year. `company_number`, when given, restricts candidates to pages
+    belonging to that company's filings, joining
+    DocumentPage -> DocumentExtraction -> FilingDocument -> Filing to reach
+    `Filing.company_number`. Both default to no restriction so existing
+    callers (in particular retrieval evaluation, whose measured baseline
+    must stay unaffected) are unchanged.
     """
     stemmed_terms = func.plainto_tsquery(_TEXT_SEARCH_CONFIGURATION, query).cast(Text)
     tsquery = func.to_tsquery(
@@ -49,6 +58,19 @@ async def search_pages(
     if document_extraction_ids is not None:
         statement = statement.where(
             DocumentPage.document_extraction_id.in_(document_extraction_ids)
+        )
+    if company_number is not None:
+        statement = (
+            statement.join(
+                DocumentExtraction,
+                DocumentExtraction.id == DocumentPage.document_extraction_id,
+            )
+            .join(
+                FilingDocument,
+                FilingDocument.id == DocumentExtraction.filing_document_id,
+            )
+            .join(Filing, Filing.id == FilingDocument.filing_id)
+            .where(Filing.company_number == company_number)
         )
     statement = statement.order_by(rank.desc()).limit(limit)
     result = await session.execute(statement)

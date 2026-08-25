@@ -161,6 +161,7 @@ class InvestigationState(TypedDict, total=False):
     """LangGraph state threaded through the investigation graph."""
 
     question: str
+    company_number: str
     generated_query: str
     fiscal_year: str | None
     fiscal_year_range: list[str]
@@ -428,6 +429,7 @@ def _build_graph(
             state["generated_query"],
             limit=search_depth,
             document_extraction_ids=document_extraction_ids,
+            company_number=state["company_number"],
         )
         pages = await _load_page_texts(session, matches[:context_pages])
         return {"retrieved_pages": pages}
@@ -458,6 +460,7 @@ def _build_graph(
                 query,
                 limit=search_depth,
                 document_extraction_ids=document_extraction_ids,
+                company_number=state["company_number"],
             )
             pages = await _load_page_texts(session, matches[:context_pages])
             evidence_text = _format_evidence_text(
@@ -516,6 +519,7 @@ async def investigate(
     session: AsyncSession,
     chat_client: ChatProvider,
     question: str,
+    company_number: str,
     *,
     search_depth: int = DEFAULT_SEARCH_DEPTH,
     context_pages: int = DEFAULT_CONTEXT_PAGES,
@@ -528,9 +532,17 @@ async def investigate(
     so lexical is the retrieval tool this first version of the agent calls.
     Unlike the evaluation dataset's hand-tuned queries, `generated_query` is
     produced by the LLM from the question alone at run time.
+
+    `company_number` is required, not optional/no-op like the fiscal-year
+    restriction: unlike a fiscal year, which a question may or may not
+    name, an investigation is always about exactly one company, so every
+    call site must be explicit about which one rather than silently
+    searching across every persisted company's filings.
     """
     graph = _build_graph(
         session, chat_client, search_depth=search_depth, context_pages=context_pages
     )
-    result = await graph.ainvoke({"question": question})
+    result = await graph.ainvoke(
+        {"question": question, "company_number": company_number}
+    )
     return cast(Finding, result["finding"])

@@ -805,11 +805,14 @@ to address.
 This first slice was deliberately the smallest useful slice: one question
 in, one finding out, no multi-step planning or looping across
 sub-questions, no human-in-the-loop review, no LLM-as-judge, and no
-persisted/checkpointed graph state. `search_pages` is also still not
-scoped by company (see
+persisted/checkpointed graph state. `search_pages` was also still not
+scoped by company at this point (see
 [Measure the lexical-search retrieval baseline](#measure-the-lexical-search-retrieval-baseline)) —
-with only Gymshark persisted this does not yet matter in practice, but a
-second company's filings would compete unfiltered in the same search.
+with only Gymshark persisted this did not yet matter in practice, but a
+second company's filings would have competed unfiltered in the same
+search. This has since been fixed; see
+[Scoping retrieval to one company](#scoping-retrieval-to-one-company)
+below.
 
 ### Multi-year investigation questions
 
@@ -1075,6 +1078,44 @@ judgement before trusting it; that calibration work is real, separate,
 and has not been done - a prompt tightened against 3-6 observed runs is
 not a substitute for it, and revisiting entailment checking should wait
 for that dedicated effort rather than another ad hoc prompt pass.
+
+## Scoping retrieval to one company
+
+`search_pages()` in [`lexical_search.py`](src/company_researcher/lexical_search.py)
+now takes an optional `company_number` parameter, joining
+`DocumentPage -> DocumentExtraction -> FilingDocument -> Filing` to filter on
+`Filing.company_number` (this join path was verified against
+[`db/models.py`](src/company_researcher/db/models.py) before writing the
+query, not assumed). It defaults to `None` (no restriction), the same
+no-op-by-default pattern the fiscal-year restriction established, so
+`retrieval_evaluation.py`'s two `search_pages` call sites — which do not pass
+it — are provably unaffected: re-running `evaluate-retrieval` after this
+change reproduced the exact same Mean Recall@5/@10/MRR reported above.
+
+`investigate()` in
+[`investigation_agent.py`](src/company_researcher/investigation_agent.py)
+now requires a `company_number` argument, threaded through
+`InvestigationState` to both `retrieve_evidence_node` and
+`gather_year_findings_node`, which pass it to `search_pages` alongside
+whatever fiscal-year restriction already applies. Unlike the fiscal-year
+restriction — genuinely optional, since a question may or may not name a
+year — company scope is not treated as optional here: an investigation is
+always about exactly one company, so every caller must be explicit about
+which one rather than risk silently searching across every persisted
+company's filings once a second company exists. The CLI's `investigate`
+command gained a `--company-number` flag defaulting to Gymshark's
+`08130873`, so `company-researcher investigate` with no arguments keeps
+working exactly as before.
+
+This was verified against the real corpus, not just in tests: a new
+`test_search_pages_restricts_to_given_company_number` test in
+`test_lexical_search.py` persists two companies' pages under the same
+query terms and confirms only the requested company's pages are returned;
+all 15 existing `investigate()` calls in `test_investigation_agent.py`
+were updated to pass an explicit `company_number`; and a real run of
+`company-researcher investigate` (no arguments) against the persisted
+Gymshark corpus completed successfully end-to-end with the new default
+wired through the CLI, `investigate()`, and `search_pages`.
 
 ## Quality checks
 

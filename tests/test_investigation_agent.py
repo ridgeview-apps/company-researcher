@@ -292,12 +292,12 @@ async def _create_filing_with_pages(
 async def test_investigate_returns_a_citation_grounded_finding(
     session: AsyncSession, company: Company
 ) -> None:
-    # `search_pages` is not scoped by company (a pre-existing, documented
-    # limitation - see README.md), so this test runs against the shared
-    # development database alongside the real persisted Gymshark corpus.
-    # Fixture text and the fake query must be deliberately distinctive
-    # nonsense, matching test_retrieval_evaluation.py's convention, or
-    # OR-combined ts_rank search will pick up unrelated real filing pages.
+    # `search_pages` is now scoped to `company` (TEST_COMPANY_NUMBER), so
+    # this test's pages cannot collide with the real persisted Gymshark
+    # corpus in the same shared development database purely through
+    # company scoping. Fixture text and the fake query are still kept
+    # deliberately distinctive nonsense, matching
+    # test_retrieval_evaluation.py's convention, as defence in depth.
     extraction = await _create_filing_with_pages(
         session,
         "investigation-transaction-alpha",
@@ -325,6 +325,7 @@ async def test_investigate_returns_a_citation_grounded_finding(
         session,
         chat_client,
         "What did alpha bravo charlie identify as evidence?",
+        company_number=TEST_COMPANY_NUMBER,
     )
 
     assert finding == expected_finding
@@ -364,7 +365,12 @@ async def test_investigate_rejects_a_finding_that_cites_unretrieved_evidence(
     )
 
     with pytest.raises(InvestigationAgentError):
-        await investigate(session, chat_client, "What did juliett kilo lima mention?")
+        await investigate(
+            session,
+            chat_client,
+            "What did juliett kilo lima mention?",
+            company_number=TEST_COMPANY_NUMBER,
+        )
 
 
 @pytest.mark.asyncio
@@ -383,7 +389,10 @@ async def test_investigate_reports_insufficient_evidence_when_nothing_is_retriev
     chat_client = FakeChatClient(query="zqxvwkploqnhfbyt", finding=insufficient_finding)
 
     finding = await investigate(
-        session, chat_client, "What is completely unrelated to this corpus?"
+        session,
+        chat_client,
+        "What is completely unrelated to this corpus?",
+        company_number=TEST_COMPANY_NUMBER,
     )
 
     assert finding.evidence_sufficient is False
@@ -435,6 +444,7 @@ async def test_investigate_disambiguates_near_duplicate_pages_by_forced_year(
         session,
         chat_client,
         "What did quebec romeo sierra tango whiskey xray disclose in the 2023 filing?",
+        company_number=TEST_COMPANY_NUMBER,
         context_pages=1,
     )
 
@@ -486,6 +496,7 @@ async def test_investigate_excludes_a_different_fiscal_years_filing_entirely(
             session,
             chat_client,
             "What did yankee zulu alpha beta gamma disclose in the 2023 filing?",
+            company_number=TEST_COMPANY_NUMBER,
             context_pages=2,
         )
 
@@ -509,6 +520,7 @@ async def test_investigate_excludes_a_different_fiscal_years_filing_entirely(
         session,
         chat_client,
         "What did yankee zulu alpha beta gamma disclose in the 2023 filing?",
+        company_number=TEST_COMPANY_NUMBER,
         context_pages=2,
     )
 
@@ -592,6 +604,7 @@ async def test_investigate_decomposes_a_multi_year_question_into_one_pass_per_ye
         session,
         chat_client,
         "How did the cobalt zenith mosaic tundra figure change from 2021 to 2023?",
+        company_number=TEST_COMPANY_NUMBER,
         context_pages=1,
     )
 
@@ -683,6 +696,7 @@ async def test_investigate_multi_year_gap_year_with_no_filing_still_gets_its_own
         session,
         chat_client,
         "How did the prairie glacier quartz reading change from 2021 to 2023?",
+        company_number=TEST_COMPANY_NUMBER,
         context_pages=1,
     )
 
@@ -745,6 +759,7 @@ async def test_investigate_multi_year_rejects_a_sub_finding_that_cites_another_y
             session,
             chat_client,
             "What did marble copper vertex disclose from 2021 to 2022?",
+            company_number=TEST_COMPANY_NUMBER,
             context_pages=1,
         )
 
@@ -812,6 +827,7 @@ async def test_investigate_multi_year_rejects_an_aggregate_citation_not_drawn_fr
             session,
             chat_client,
             "What did willow granite obsidian disclose from 2021 to 2022?",
+            company_number=TEST_COMPANY_NUMBER,
             context_pages=1,
         )
 
@@ -856,7 +872,10 @@ async def test_investigate_self_corrects_a_fabricated_quote_on_retry(
     )
 
     finding = await investigate(
-        session, chat_client, "What did amber lichen thistle disclose?"
+        session,
+        chat_client,
+        "What did amber lichen thistle disclose?",
+        company_number=TEST_COMPANY_NUMBER,
     )
 
     assert finding == corrected_finding
@@ -907,7 +926,10 @@ async def test_investigate_rejects_a_quote_still_fabricated_after_retry(
 
     with pytest.raises(InvestigationAgentError):
         await investigate(
-            session, chat_client, "What did basil driftwood ember disclose?"
+            session,
+            chat_client,
+            "What did basil driftwood ember disclose?",
+            company_number=TEST_COMPANY_NUMBER,
         )
 
     assert len(chat_client.complete_structured_calls) == 2
@@ -990,6 +1012,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_quote_in_a_year
         session,
         chat_client,
         "How did the cedar hollow mercury reading change from 2021 to 2022?",
+        company_number=TEST_COMPANY_NUMBER,
         context_pages=1,
     )
 
@@ -1074,6 +1097,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_aggregate_quote
         session,
         chat_client,
         "How did the fern quartz lantern count change from 2021 to 2022?",
+        company_number=TEST_COMPANY_NUMBER,
         context_pages=1,
     )
 
@@ -1108,7 +1132,10 @@ async def test_investigate_tolerates_a_clean_quote_against_ocr_noisy_digit_separ
     )
 
     finding = await investigate(
-        session, chat_client, "What was hazel current turnover total?"
+        session,
+        chat_client,
+        "What was hazel current turnover total?",
+        company_number=TEST_COMPANY_NUMBER,
     )
 
     assert finding == clean_quote_finding
@@ -1141,7 +1168,10 @@ async def test_investigate_tolerates_a_clean_quote_against_ocr_mismatched_bracke
     )
 
     finding = await investigate(
-        session, chat_client, "When was ivory falcon meridian appointed?"
+        session,
+        chat_client,
+        "When was ivory falcon meridian appointed?",
+        company_number=TEST_COMPANY_NUMBER,
     )
 
     assert finding == clean_quote_finding
@@ -1174,4 +1204,9 @@ async def test_investigate_still_rejects_a_genuinely_different_fabricated_number
     )
 
     with pytest.raises(InvestigationAgentError):
-        await investigate(session, chat_client, "What was juniper opal cascade total?")
+        await investigate(
+            session,
+            chat_client,
+            "What was juniper opal cascade total?",
+            company_number=TEST_COMPANY_NUMBER,
+        )

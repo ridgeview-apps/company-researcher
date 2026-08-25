@@ -265,7 +265,9 @@ def test_main_prints_investigation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(cli, "run_investigation", lambda question: '{"ok": true}')
+    monkeypatch.setattr(
+        cli, "run_investigation", lambda question, company_number: '{"ok": true}'
+    )
 
     exit_code = cli.main(["investigate", "What happened?"])
 
@@ -311,10 +313,13 @@ async def test_investigate_command_orchestrates_agent(
     monkeypatch.setattr(cli, "ChatClient", fake_chat_client_cls)
     monkeypatch.setattr(cli, "investigate", run_agent)
 
-    output = await cli.investigate_command("What is the going-concern position?")
+    output = await cli.investigate_command(
+        "What is the going-concern position?", "08130873"
+    )
 
     assert json.loads(output) == {
         "question": "What is the going-concern position?",
+        "company_number": "08130873",
         "claim": "Evidence supports the conclusion.",
         "evidence_sufficient": True,
         "citations": [
@@ -322,7 +327,7 @@ async def test_investigate_command_orchestrates_agent(
         ],
     }
     run_agent.assert_awaited_once_with(
-        session, chat_client, "What is the going-concern position?"
+        session, chat_client, "What is the going-concern position?", "08130873"
     )
     engine.dispose.assert_awaited_once_with()
 

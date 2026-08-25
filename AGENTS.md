@@ -211,11 +211,12 @@ investigation agent" section for the full detail.
 
 This first slice was deliberately narrow: one natural-language question
 in, one structured `Finding` out, no multi-step planning/looping, no HITL,
-no LLM-judge, and no persisted/checkpointed graph state. `search_pages` is
-also still not scoped by company (a pre-existing limitation, now directly
-relevant here too, not just to retrieval evaluation) — with only Gymshark
-persisted this does not yet matter in practice, but a second company's
-filings would compete in the same lexical search unfiltered.
+no LLM-judge, and no persisted/checkpointed graph state. `search_pages`
+was also still not scoped by company at this point (a pre-existing
+limitation, directly relevant here too, not just to retrieval
+evaluation) — with only Gymshark persisted this did not yet matter in
+practice, but a second company's filings would have competed in the same
+lexical search unfiltered. This has since been fixed — see below.
 
 The multi-step investigation milestone (handling a question that names
 several fiscal years at once, e.g. a turnover or directors comparison
@@ -312,6 +313,30 @@ of the active system. See README.md's "A reverted attempt at citation
 entailment checking" section for the full detail. Revisiting this needs
 the dedicated LLM-judge calibration work the project brief already calls
 for, not another ad hoc prompt pass.
+
+`search_pages` (`lexical_search.py`) is now scoped by company. It gained
+an optional `company_number` parameter, joining `DocumentPage ->
+DocumentExtraction -> FilingDocument -> Filing` to filter on
+`Filing.company_number`, verified against `db/models.py` before
+implementing; it defaults to no restriction, matching the fiscal-year
+restriction's no-op-by-default pattern, so `retrieval_evaluation.py`'s
+call sites are unaffected — re-running `evaluate-retrieval` reproduced
+the exact same measured baseline. `investigate()` now requires a
+`company_number` argument (deliberately required, not optional like the
+fiscal-year restriction, since an investigation is always about exactly
+one company), threaded to both `retrieve_evidence_node` and
+`gather_year_findings_node`. The CLI's `investigate` command gained a
+`--company-number` flag defaulting to Gymshark's `08130873`, so the
+zero-argument CLI invocation is unchanged. This was verified with a new
+company-scoping test in `test_lexical_search.py`, updated calls across
+`test_investigation_agent.py`, and a real end-to-end run of
+`company-researcher investigate` against the persisted Gymshark corpus.
+See README.md's "Scoping retrieval to one company" section for the full
+detail. This closes the standing limitation flagged since the first
+retrieval-evaluation milestone; it does not itself ingest a second
+company or build the holdout evaluation set or LLM-baseline comparison
+the project brief calls for — those remain separate, not-yet-started
+work.
 
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
