@@ -287,6 +287,32 @@ out of its real order), not further false positives, so they were left
 as-is rather than chased with more normalization. See README.md's
 "Verifying citation quotes" section for the full detail.
 
+A citation-entailment-checking milestone was attempted next — an
+LLM-judge check for whether a citation's (already quote-verified)
+`supporting_text` actually substantiates the specific fact the claim
+attributes to it, deliberately crossing AGENTS.md's LLM-judge gate after
+explicit agreement — and was reverted after real-corpus verification, not
+shipped. It was motivated by a real gap: a citation had verbatim-quoted
+"External D2C sales 253,893" while the claim asserted that figure as the
+year's *total* turnover. The built check (`EntailmentJudgment`,
+`_check_entailment`, integrated into `_synthesize_and_validate`'s
+existing retry budget, 13 new tests) worked in unit tests, but 6 real
+runs across two rounds of prompt tightening found the judge sometimes
+writes a reason affirming a citation is correct and still flags it as
+unsupported in the same response — a reliability defect, not a wording
+problem prompt tuning could fix. Because the check fails closed, shipping
+it would have made `investigate` error on a real, correct answer to one
+of this project's own two canonical multi-year regression questions more
+often than not — a net reliability regression, not a documentable rough
+edge. The code and tests were reverted; `investigate` remains at the
+quote-verification milestone. This is a genuine negative result, recorded
+the same way the vector-only and naive hybrid retrieval baselines were —
+built, measured, found not to earn its place, and deliberately kept out
+of the active system. See README.md's "A reverted attempt at citation
+entailment checking" section for the full detail. Revisiting this needs
+the dedicated LLM-judge calibration work the project brief already calls
+for, not another ad hoc prompt pass.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or

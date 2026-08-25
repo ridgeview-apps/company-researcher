@@ -1014,6 +1014,68 @@ occasionally raising `InvestigationAgentError` on a real run is this
 system refusing to serve a fabricated citation rather than a defect to
 paper over.
 
+### A reverted attempt at citation entailment checking
+
+Quote verification proves a citation's `supporting_text` is real,
+verbatim text from its page. It does not prove that text actually
+substantiates the specific fact the `claim` attributes to it. A real
+run surfaced exactly this gap: a citation verbatim-quoted "External D2C
+sales 253,893," and the claim asserted that figure as the year's *total*
+turnover - a real quote, cited for the wrong fact.
+
+An LLM-judge entailment check was built to catch this:
+`EntailmentJudgment`/`EntailmentIssue` structured models, a
+`_check_entailment` call integrated into `_synthesize_and_validate`
+sharing the existing quote-check's single retry budget, and 13 new tests
+(all passing, all using a fake chat client). This deliberately crossed
+AGENTS.md's gate on adding an LLM judge, done only after explicitly
+agreeing to it as this milestone.
+
+Real-corpus verification found a genuine, reproducible problem, not a
+false alarm to shrug off. Against the FY2021 turnover citation
+(`document_extraction_id=45`, page 28 - the same page whose class-of-business
+table sums "External sales 398,627" + "intercompany sales 39,002" to a
+"437,629" total line the page states outright), the judge flagged the
+citation as unsupported on 3 of 3 runs, reasoning that intercompany
+sales "should not be added" to represent total turnover - simply wrong
+about what this specific page does. The system prompt was tightened to
+explicitly trust a computation the source page performs itself, and
+re-run: the arithmetic complaint disappeared, but two new problems
+appeared in its place across another 3 runs - the judge complaining the
+short quote didn't repeat a year/heading label that was genuinely
+present a few lines above it on the full page, and, more seriously, a
+verdict that contradicted its own stated reason (literally writing "so
+it does support the claim entirely" or "which is correct" as the
+*reason* for flagging a citation as unsupported). Showing the judge the
+full cited page alongside the quote (not just the isolated excerpt) was
+tried next, specifically to fix the missing-label complaints - but the
+self-contradictory verdicts persisted across a further 3 runs.
+
+Two rounds of prompt tuning (6 real runs total) did not fix a judge that
+sometimes writes a reason affirming support and flags the citation as
+unsupported anyway - that is a reliability defect, not a wording
+problem, and continuing to iterate on prompt text against it would have
+been guessing against LLM sampling noise rather than fixing a diagnosed
+cause, the opposite of how every other result in this project was
+reached. Because the check fails closed, shipping it as-is would have
+made `investigate` error out on a real, correct answer to one of this
+project's own two canonical multi-year regression questions more often
+than not - a net reliability regression, not a rough edge worth
+documenting and shipping anyway.
+
+The entailment-checking code and its tests were reverted rather than
+merged. This is a genuine negative result, recorded rather than
+smoothed over, in the same spirit as the vector-only and naive hybrid
+retrieval baselines earlier in this project: built, measured, found to
+underperform on a directly relevant real case, and deliberately not
+made part of the active system. `investigate` remains at the citation
+quote-verification milestone documented above. The project brief's own
+"LLM-as-a-judge" section calls for calibrating a judge against human
+judgement before trusting it; that calibration work is real, separate,
+and has not been done - a prompt tightened against 3-6 observed runs is
+not a substitute for it, and revisiting entailment checking should wait
+for that dedicated effort rather than another ad hoc prompt pass.
+
 ## Quality checks
 
 Most of this project's tests exercise a real local PostgreSQL instance (the
