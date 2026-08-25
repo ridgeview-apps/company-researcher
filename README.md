@@ -924,6 +924,96 @@ a number for it technically exists elsewhere in the corpus. Extracting
 comparative-column data from an adjacent year's filing is a distinct,
 unaddressed problem, not something this milestone attempted.
 
+### Verifying citation quotes
+
+Inspecting the FY2022 citation from the turnover run above (see the
+nuance recorded just above) surfaced a genuine, previously invisible gap:
+`_validate_citations` only ever checked that a citation's
+`(document_extraction_id, page_number)` was part of the retrieved
+evidence — it never checked that a citation's `supporting_text` was
+actually real text from that page. The FY2022 citation's quote spliced
+together the header of one table with the total line of a different table
+further down the same page, joined by an inserted "…" — a real page, but
+a fabricated excerpt of it, which nothing in the existing evidence
+contract would have caught.
+
+`investigation_agent.py` closes this gap with `_find_quote_mismatches`, a
+deterministic check (no LLM judge) run alongside `_validate_citations`:
+each citation's `supporting_text` is normalized and checked for
+containment in the real, equally-normalized `DocumentPage.text` it cites.
+A failed check no longer fails closed immediately - `_synthesize_and_validate`
+(a new helper shared by all three synthesis call sites: the single-year
+path, each per-year pass, and the final aggregation) retries the
+synthesis once, telling the model exactly which quote didn't match and
+asking it to requote verbatim, before raising `InvestigationAgentError` if
+the retry also fails. `_FINDING_SYSTEM_PROMPT` was also tightened to
+require an exact, contiguous quote up front, rather than relying on the
+retry alone to teach that contract.
+
+This was first verified with unit tests (13 covering the check itself,
+self-correction succeeding and failing, and the retry firing correctly in
+both the single-year and multi-year paths), then run repeatedly against
+the real LLM and corpus - which surfaced that a naive verbatim check was
+initially too strict, and refined the design through several real
+failures rather than assuming it would work:
+
+- **OCR renders a thousands separator as "." instead of ","** (e.g.
+  "437.629" for "437,629") and adds stray underscore "leader" characters
+  (e.g. "__260.674") around it.
+- **OCR pairs a mismatched bracket character** (e.g. "{Appointed 9
+  January 2023)" for "(Appointed 9 January 2023)").
+- **OCR drops a space inside a name** (e.g. "N AMcElhinney" for "N A
+  McElhinney").
+- **The model itself naturally reformats a page's newline-separated list**
+  (e.g. one director name per line) **into a comma-separated, period-terminated
+  prose sentence** when quoting it - a real quote, just not
+  whitespace-for-whitespace identical to the source.
+
+None of these involve a different word or digit sequence, only
+whitespace or punctuation, so `_normalize_for_quote_check` strips commas,
+periods, and underscores entirely, canonicalizes curly braces to
+parentheses, and removes whitespace completely (not just collapses it)
+before comparing. This is a deliberate trade-off, made explicit rather
+than silently accepted: it makes the check slightly more permissive (two
+different numbers, or two unrelated adjacent words, could in principle
+collide once the characters between them are stripped), in exchange for
+no longer rejecting a genuinely real quote purely for not reproducing
+scanner noise or reflowing a list into prose. A dedicated test confirms
+it does **not** become so permissive that a genuinely different fabricated
+figure is missed (`437,629` and `500,000` still normalize differently).
+
+After that refinement, re-running both the turnover and directors
+questions repeatedly against the real corpus still produced occasional
+`InvestigationAgentError`s - and inspecting those failures directly
+(bypassing the validator to print the model's raw, rejected quote)
+confirmed they are the check working correctly, not a further
+normalization gap:
+
+- One rejected citation pointed at a real page discussing FY2025 going
+  concern - entirely unrelated to directors or a company secretary - when
+  the corpus most likely doesn't actually contain the secretary's name in
+  a form retrieval could surface for this multi-year query (see the
+  directors run's "still-open limitation" recorded above); the model
+  reached for irrelevant evidence and fabricated a quote from it, and this
+  was correctly rejected even after a retry.
+- Another rejected citation reordered content from a real page - placing
+  a subsection heading before the table-header line the page actually
+  states it after - which is exactly the "splice together text from
+  different parts of the page" failure the finding prompt explicitly
+  warns against, correctly rejected as non-contiguous even though every
+  individual word was genuinely on the page.
+
+Deliberately not pursued: normalizing further OCR character
+substitutions (e.g. an apostrophe in "£'000" rendered as a degree sign)
+as they turn up one at a time, or loosening the check to tolerate
+reordered/non-contiguous text. Both would keep chasing individual OCR
+quirks indefinitely, and the latter would gut the check's actual
+purpose - the two remaining failure modes above are correct rejections
+of genuinely unfaithful evidence, not false positives, so `investigate`
+occasionally raising `InvestigationAgentError` on a real run is this
+system refusing to serve a fabricated citation rather than a defect to
+paper over.
+
 ## Quality checks
 
 Most of this project's tests exercise a real local PostgreSQL instance (the

@@ -265,6 +265,28 @@ than prompt-patched around a single observed run. See README.md's
 "Multi-year investigation questions" and "Observed real-run result"
 sections for the full detail.
 
+A citation-quote-verification and self-correction milestone is also now
+built and measured, motivated by a real gap that same turnover run
+surfaced: `_validate_citations` only ever confirmed a citation's page was
+retrieved, never that its `supporting_text` was real text from that page
+— one citation had spliced together two different tables' text with an
+inserted "…". `_find_quote_mismatches` (deterministic, no LLM judge) now
+checks that too, and `_synthesize_and_validate` (a new helper shared by
+the single-year, per-year, and aggregation synthesis calls) retries once
+with feedback before raising `InvestigationAgentError`. Built with 13 new
+tests, then measured against the real LLM and corpus repeatedly, which
+found the first version too strict and drove three rounds of refining
+`_normalize_for_quote_check` against real, observed OCR/formatting noise
+(a "." for "," thousands separator, mismatched OCR brackets, a missing
+space inside a name, a newline-separated list quoted as comma-separated
+prose) rather than assumed ones. After that refinement, remaining
+real-run `InvestigationAgentError`s were confirmed — by inspecting the
+model's raw rejected quotes directly — to be the check correctly
+rejecting genuine fabrication (an unrelated page, or page content quoted
+out of its real order), not further false positives, so they were left
+as-is rather than chased with more normalization. See README.md's
+"Verifying citation quotes" section for the full detail.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or

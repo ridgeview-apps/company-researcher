@@ -36,16 +36,20 @@ _FINDING_SYSTEM_PROMPT = (
     "question using ONLY the evidence pages provided below. Every citation "
     "must reference one of the listed pages, using its exact "
     "document_extraction_id and page_number - never cite a page that is not "
-    "listed. If the provided pages do not contain enough information to "
-    "answer confidently, set evidence_sufficient to false and say so in the "
-    "claim rather than guessing or inventing an explanation. UK statutory "
-    "accounts filings contain multiple distinct voices - for example the "
-    "directors' own report and notes, and the independent auditor's report "
-    "- which often discuss the same topic (such as going concern) on nearby "
-    "pages without being interchangeable. When the question asks what a "
-    "specific party stated or identified, rely only on that party's own "
-    "words; do not attribute the auditor's opinion or wording to the "
-    "directors, or vice versa, even where both discuss the same topic."
+    "listed. Every citation's supporting_text must be an exact, contiguous "
+    "quote copied verbatim from that page's text below - do not paraphrase, "
+    "summarize, or splice together text from different parts of the page or "
+    "from different tables. If the provided pages do not contain enough "
+    "information to answer confidently, set evidence_sufficient to false "
+    "and say so in the claim rather than guessing or inventing an "
+    "explanation. UK statutory accounts filings contain multiple distinct "
+    "voices - for example the directors' own report and notes, and the "
+    "independent auditor's report - which often discuss the same topic "
+    "(such as going concern) on nearby pages without being interchangeable. "
+    "When the question asks what a specific party stated or identified, "
+    "rely only on that party's own words; do not attribute the auditor's "
+    "opinion or wording to the directors, or vice versa, even where both "
+    "discuss the same topic."
 )
 
 _AGGREGATE_SYSTEM_PROMPT = (
@@ -208,6 +212,139 @@ def _validate_citations(
             )
 
 
+def _normalize_for_quote_check(text: str) -> str:
+    """Strip whitespace/punctuation noise and case so a genuine quote isn't rejected for it.
+
+    Real runs against the persisted corpus (see README.md's "Verifying
+    citation quotes" section) surfaced several recurring, non-substantive
+    differences between a real page and an otherwise-genuine quote of it:
+    OCR renders a "." instead of "," as a thousands separator (e.g.
+    "437.629" for "437,629"); OCR pairs a mismatched bracket character
+    (e.g. "{Appointed 9 January 2023)" for "(Appointed 9 January 2023)");
+    OCR drops a space inside a word or name (e.g. "N AMcElhinney" for "N A
+    McElhinney"); and the model itself naturally joins a page's newline-
+    separated list (e.g. a list of directors, one name per line) into a
+    comma-separated prose sentence when quoting it, terminated with a
+    period the source never had. None of these involve a different word or
+    digit sequence - only whitespace and punctuation - so every run of
+    whitespace is removed entirely rather than merely collapsed, commas
+    and periods are stripped, curly braces are canonicalized to
+    parentheses, and stray underscore "leader" characters (e.g.
+    "__260.674") are stripped too. This is a deliberate trade-off: it
+    makes the check slightly more permissive (in principle two genuinely
+    different numbers, or two adjacent but unrelated words, could collide
+    once whitespace and separators between them are removed), which is
+    acceptable because this check only verifies quote *fidelity* to real
+    page text - catching a wrong page or fabricated content - not the
+    numeric or semantic correctness of the claim built from it, which is a
+    distinct, harder problem not covered here (see the real-run FY2022
+    example in the same README section).
+    """
+    normalized = text.replace("{", "(").replace("}", ")")
+    for character in (",", ".", "_"):
+        normalized = normalized.replace(character, "")
+    return "".join(normalized.split()).lower()
+
+
+def _find_quote_mismatches(
+    finding: Finding, retrieved_pages: Sequence[RetrievedPage]
+) -> list[Citation]:
+    """Return citations whose supporting_text is not a verbatim excerpt of its cited page.
+
+    Assumes `_validate_citations` has already confirmed every citation's
+    page was actually retrieved - a citation whose page is missing from
+    `retrieved_pages` is skipped here rather than re-reported. Catches a
+    citation that points at a real, retrieved page but quotes text that
+    was never actually written there (including text spliced together
+    from different parts of the page) - a genuine gap the existing
+    page-identity check alone cannot catch, observed on a real
+    investigation run (see README.md's "Verifying citation quotes"
+    section).
+    """
+    text_by_key = {
+        (page.document_extraction_id, page.page_number): page.text
+        for page in retrieved_pages
+    }
+    mismatches = []
+    for citation in finding.citations:
+        page_text = text_by_key.get(
+            (citation.document_extraction_id, citation.page_number)
+        )
+        if page_text is None:
+            continue
+        quote = _normalize_for_quote_check(citation.supporting_text)
+        if quote and quote not in _normalize_for_quote_check(page_text):
+            mismatches.append(citation)
+    return mismatches
+
+
+def _format_quote_correction_request(mismatches: Sequence[Citation]) -> str:
+    """Describe exactly which citation quotes failed verbatim verification, for a retry prompt."""
+    lines = "\n".join(
+        f"- document_extraction_id={citation.document_extraction_id} "
+        f"page_number={citation.page_number}: "
+        f'"{citation.supporting_text}" is not an exact, contiguous quote from that page'
+        for citation in mismatches
+    )
+    return (
+        "Your previous response's supporting_text was not an exact, "
+        "contiguous quote copied verbatim from the cited page's text for "
+        f"the following citation(s):\n{lines}\n\n"
+        "Respond again. Keep the same claim if it is still correct, but "
+        "replace each supporting_text above with an exact, contiguous "
+        "excerpt copied verbatim from that citation's page - do not "
+        "paraphrase or splice text from different parts of the page "
+        "together."
+    )
+
+
+async def _synthesize_and_validate(
+    chat_client: ChatProvider,
+    system_prompt: str,
+    user_message: str,
+    retrieved_pages: Sequence[RetrievedPage],
+) -> Finding:
+    """Run one structured synthesis call and enforce both citation guarantees.
+
+    Every citation must reference a page that was actually retrieved
+    (`_validate_citations`, unchanged, fail-closed with no retry - an
+    existence violation is a more severe error than an imprecise quote).
+    Every citation's supporting_text must also be a genuine, verbatim
+    excerpt of that page's real text (`_find_quote_mismatches`). A failed
+    quote check retries the synthesis once with feedback naming exactly
+    which quote was wrong, giving the model a chance to self-correct
+    before this raises `InvestigationAgentError`.
+    """
+    messages = [
+        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="user", content=user_message),
+    ]
+    finding = await chat_client.complete_structured(messages, Finding)
+    _validate_citations(finding, retrieved_pages)
+    mismatches = _find_quote_mismatches(finding, retrieved_pages)
+    if not mismatches:
+        return finding
+
+    retry_message = f"{user_message}\n\n{_format_quote_correction_request(mismatches)}"
+    retried_finding = await chat_client.complete_structured(
+        [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=retry_message),
+        ],
+        Finding,
+    )
+    _validate_citations(retried_finding, retrieved_pages)
+    remaining_mismatches = _find_quote_mismatches(retried_finding, retrieved_pages)
+    if remaining_mismatches:
+        citation = remaining_mismatches[0]
+        raise InvestigationAgentError(
+            f"Finding cited document_extraction_id={citation.document_extraction_id} "
+            f"page_number={citation.page_number} with a supporting_text quote that is "
+            "not verbatim text from that page, even after a self-correction retry"
+        )
+    return retried_finding
+
+
 def _format_evidence_text(pages: Sequence[RetrievedPage], *, empty_message: str) -> str:
     """Render retrieved pages as labelled evidence text for a synthesis prompt."""
     if not pages:
@@ -301,14 +438,9 @@ def _build_graph(
             pages, empty_message="No evidence pages were retrieved for this question."
         )
         user_message = f"Question: {state['question']}\n\nAvailable evidence pages:\n\n{evidence_text}"
-        finding = await chat_client.complete_structured(
-            [
-                ChatMessage(role="system", content=_FINDING_SYSTEM_PROMPT),
-                ChatMessage(role="user", content=user_message),
-            ],
-            Finding,
+        finding = await _synthesize_and_validate(
+            chat_client, _FINDING_SYSTEM_PROMPT, user_message, pages
         )
-        _validate_citations(finding, pages)
         return {"finding": finding}
 
     async def gather_year_findings_node(
@@ -336,14 +468,9 @@ def _build_graph(
                 f"Question: {question}\n\nFocus specifically on fiscal year {year}.\n\n"
                 f"Available evidence pages:\n\n{evidence_text}"
             )
-            finding = await chat_client.complete_structured(
-                [
-                    ChatMessage(role="system", content=_FINDING_SYSTEM_PROMPT),
-                    ChatMessage(role="user", content=user_message),
-                ],
-                Finding,
+            finding = await _synthesize_and_validate(
+                chat_client, _FINDING_SYSTEM_PROMPT, user_message, pages
             )
-            _validate_citations(finding, pages)
             year_evidence.append(
                 YearEvidence(fiscal_year=year, retrieved_pages=pages, finding=finding)
             )
@@ -355,17 +482,12 @@ def _build_graph(
         user_message = (
             f"Question: {state['question']}\n\nPer-year findings:\n\n{summary}"
         )
-        finding = await chat_client.complete_structured(
-            [
-                ChatMessage(role="system", content=_AGGREGATE_SYSTEM_PROMPT),
-                ChatMessage(role="user", content=user_message),
-            ],
-            Finding,
-        )
         all_pages = [
             page for evidence in year_evidence for page in evidence.retrieved_pages
         ]
-        _validate_citations(finding, all_pages)
+        finding = await _synthesize_and_validate(
+            chat_client, _AGGREGATE_SYSTEM_PROMPT, user_message, all_pages
+        )
         return {"finding": finding}
 
     graph = StateGraph(InvestigationState)

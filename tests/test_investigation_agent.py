@@ -22,6 +22,7 @@ from company_researcher.investigation_agent import (
     Finding,
     InvestigationAgentError,
     _force_unambiguous_fiscal_year,
+    _normalize_for_quote_check,
     investigate,
 )
 from company_researcher.llm_client import ChatMessage
@@ -91,6 +92,26 @@ def _finding_selector_by_year(
     return selector
 
 
+_RETRY_MARKER = "was not an exact, contiguous quote copied verbatim"
+
+
+def _finding_selector_with_retry(
+    initial: Finding, corrected: Finding
+) -> Callable[[Sequence[ChatMessage]], Finding]:
+    """Return `initial` on the first `complete_structured` call, `corrected` on the retry.
+
+    `_synthesize_and_validate`'s retry prompt always contains `_RETRY_MARKER`
+    (from `_format_quote_correction_request`), so its presence distinguishes
+    the retry call from the original one regardless of which node issued it.
+    """
+
+    def selector(messages: Sequence[ChatMessage]) -> Finding:
+        content = messages[-1].content
+        return corrected if _RETRY_MARKER in content else initial
+
+    return selector
+
+
 def test_force_unambiguous_fiscal_year_appends_a_missing_single_year() -> None:
     query = _force_unambiguous_fiscal_year(
         "going concern committed facility", "What was the position in FY2023?"
@@ -124,6 +145,47 @@ def test_force_unambiguous_fiscal_year_leaves_yearless_questions_unchanged() -> 
     )
 
     assert query == "directors secretary registered office"
+
+
+def test_normalize_for_quote_check_tolerates_ocr_digit_separator_confusion() -> None:
+    """Regression test for a real observed failure: OCR renders a thousands separator as '.' instead of ',' (e.g. "437.629" for "437,629")."""
+    assert _normalize_for_quote_check("437.629") == _normalize_for_quote_check(
+        "437,629"
+    )
+
+
+def test_normalize_for_quote_check_tolerates_mismatched_brackets() -> None:
+    """Regression test for a real observed failure: OCR renders a bracket pair with mismatched characters (e.g. an opening curly brace paired with a closing parenthesis)."""
+    assert _normalize_for_quote_check(
+        "{Appointed 9 January 2023)"
+    ) == _normalize_for_quote_check("(Appointed 9 January 2023)")
+
+
+def test_normalize_for_quote_check_strips_underscore_leaders() -> None:
+    assert _normalize_for_quote_check("__260.674") == _normalize_for_quote_check(
+        "260,674"
+    )
+
+
+def test_normalize_for_quote_check_tolerates_a_newline_list_quoted_as_prose() -> None:
+    """Regression test for a real observed failure: the page lists items one per line (e.g. a list of directors), but the model naturally quotes them as a comma-separated, period-terminated sentence."""
+    page = "The directors who served during the year were:\n\nB Francis\n\nS Hewitt\n\nP Daw"
+    quote = "The directors who served during the year were: B Francis, S Hewitt, P Daw."
+    assert _normalize_for_quote_check(quote) in _normalize_for_quote_check(page)
+
+
+def test_normalize_for_quote_check_tolerates_a_missing_space_inside_a_name() -> None:
+    """Regression test for a real observed failure: OCR drops a space inside a name ("N AMcElhinney"), but the model naturally quotes it correctly spaced ("N A McElhinney")."""
+    assert _normalize_for_quote_check("N AMcElhinney") == _normalize_for_quote_check(
+        "N A McElhinney"
+    )
+
+
+def test_normalize_for_quote_check_still_distinguishes_different_numbers() -> None:
+    """The punctuation tolerance above must not become so permissive that genuinely different figures collapse together."""
+    assert _normalize_for_quote_check("437,629") != _normalize_for_quote_check(
+        "500,000"
+    )
 
 
 @pytest_asyncio.fixture
@@ -752,3 +814,364 @@ async def test_investigate_multi_year_rejects_an_aggregate_citation_not_drawn_fr
             "What did willow granite obsidian disclose from 2021 to 2022?",
             context_pages=1,
         )
+
+
+@pytest.mark.asyncio
+async def test_investigate_self_corrects_a_fabricated_quote_on_retry(
+    session: AsyncSession, company: Company
+) -> None:
+    """A citation whose supporting_text is not verbatim page text must trigger one retry, not an immediate rejection - the model gets a chance to requote correctly (see README's "Verifying citation quotes" section for the real-run case this is modelled on)."""
+    extraction = await _create_filing_with_pages(
+        session,
+        "investigation-quote-retry-success",
+        ["Amber lichen thistle disclosure states the figure was 42 in total."],
+    )
+    fabricated_finding = Finding(
+        claim="Amber lichen thistle figure was 42.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="figure was forty-two exactly",
+            )
+        ],
+    )
+    corrected_finding = Finding(
+        claim="Amber lichen thistle figure was 42.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="figure was 42 in total",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="amber lichen thistle",
+        finding_selector=_finding_selector_with_retry(
+            fabricated_finding, corrected_finding
+        ),
+    )
+
+    finding = await investigate(
+        session, chat_client, "What did amber lichen thistle disclose?"
+    )
+
+    assert finding == corrected_finding
+    assert len(chat_client.complete_structured_calls) == 2
+    retry_prompt = chat_client.complete_structured_calls[1][-1].content
+    assert _RETRY_MARKER in retry_prompt
+    assert "figure was forty-two exactly" in retry_prompt
+
+
+@pytest.mark.asyncio
+async def test_investigate_rejects_a_quote_still_fabricated_after_retry(
+    session: AsyncSession, company: Company
+) -> None:
+    """Only one self-correction retry is attempted - a still-fabricated quote after that must raise, not loop indefinitely."""
+    extraction = await _create_filing_with_pages(
+        session,
+        "investigation-quote-retry-failure",
+        ["Basil driftwood ember disclosure states the total was 17."],
+    )
+    fabricated_finding = Finding(
+        claim="Basil driftwood ember total was 17.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="the total was definitely seventeen",
+            )
+        ],
+    )
+    still_fabricated_finding = Finding(
+        claim="Basil driftwood ember total was 17.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="a completely different invented quote",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="basil driftwood ember",
+        finding_selector=_finding_selector_with_retry(
+            fabricated_finding, still_fabricated_finding
+        ),
+    )
+
+    with pytest.raises(InvestigationAgentError):
+        await investigate(
+            session, chat_client, "What did basil driftwood ember disclose?"
+        )
+
+    assert len(chat_client.complete_structured_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_investigate_multi_year_self_corrects_a_fabricated_quote_in_a_year_pass(
+    session: AsyncSession, company: Company
+) -> None:
+    """Quote verification and self-correction must also apply inside gather_year_findings_node's per-year passes, not only the single-year path."""
+    extraction_2021 = await _create_filing_with_pages(
+        session,
+        "investigation-quote-retry-multiyear-2021",
+        ["Cedar hollow mercury disclosure states the reading was 8 for 2021."],
+        made_up_date="2021-07-31",
+    )
+    extraction_2022 = await _create_filing_with_pages(
+        session,
+        "investigation-quote-retry-multiyear-2022",
+        ["Cedar hollow mercury disclosure states the reading was 9 for 2022."],
+        made_up_date="2022-07-31",
+    )
+    fabricated_2021 = Finding(
+        claim="Cedar hollow mercury reading was 8 in 2021.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2021.id,
+                page_number=1,
+                supporting_text="the reading was eight exactly",
+            )
+        ],
+    )
+    corrected_2021 = Finding(
+        claim="Cedar hollow mercury reading was 8 in 2021.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2021.id,
+                page_number=1,
+                supporting_text="the reading was 8 for 2021",
+            )
+        ],
+    )
+    finding_2022 = Finding(
+        claim="Cedar hollow mercury reading was 9 in 2022.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2022.id,
+                page_number=1,
+                supporting_text="the reading was 9 for 2022",
+            )
+        ],
+    )
+    aggregate_finding = Finding(
+        claim="Cedar hollow mercury reading rose from 8 in 2021 to 9 in 2022.",
+        evidence_sufficient=True,
+        citations=[
+            corrected_2021.citations[0],
+            finding_2022.citations[0],
+        ],
+    )
+
+    def selector(messages: Sequence[ChatMessage]) -> Finding:
+        content = messages[-1].content
+        if "Per-year findings:" in content:
+            return aggregate_finding
+        if "fiscal year 2021" in content:
+            return corrected_2021 if _RETRY_MARKER in content else fabricated_2021
+        if "fiscal year 2022" in content:
+            return finding_2022
+        raise AssertionError(f"No fake finding configured for prompt: {content!r}")
+
+    chat_client = FakeChatClient(
+        query="cedar hollow mercury", finding_selector=selector
+    )
+
+    finding = await investigate(
+        session,
+        chat_client,
+        "How did the cedar hollow mercury reading change from 2021 to 2022?",
+        context_pages=1,
+    )
+
+    assert finding == aggregate_finding
+    # 2021 costs two calls (fabricated + retry), 2022 costs one, aggregation costs one.
+    assert len(chat_client.complete_structured_calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_investigate_multi_year_self_corrects_a_fabricated_aggregate_quote(
+    session: AsyncSession, company: Company
+) -> None:
+    """The aggregation call is subject to the same quote verification as the per-year passes, even though it is meant to copy citations verbatim from them."""
+    extraction_2021 = await _create_filing_with_pages(
+        session,
+        "investigation-agg-quote-retry-2021",
+        ["Fern quartz lantern disclosure states the count was 5 for 2021."],
+        made_up_date="2021-07-31",
+    )
+    extraction_2022 = await _create_filing_with_pages(
+        session,
+        "investigation-agg-quote-retry-2022",
+        ["Fern quartz lantern disclosure states the count was 6 for 2022."],
+        made_up_date="2022-07-31",
+    )
+    finding_2021 = Finding(
+        claim="Fern quartz lantern count was 5 in 2021.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2021.id,
+                page_number=1,
+                supporting_text="the count was 5 for 2021",
+            )
+        ],
+    )
+    finding_2022 = Finding(
+        claim="Fern quartz lantern count was 6 in 2022.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2022.id,
+                page_number=1,
+                supporting_text="the count was 6 for 2022",
+            )
+        ],
+    )
+    fabricated_aggregate = Finding(
+        claim="Fern quartz lantern count rose from 5 in 2021 to 6 in 2022.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2021.id,
+                page_number=1,
+                supporting_text="the count was five, not fabricated at all",
+            )
+        ],
+    )
+    corrected_aggregate = Finding(
+        claim="Fern quartz lantern count rose from 5 in 2021 to 6 in 2022.",
+        evidence_sufficient=True,
+        citations=[finding_2021.citations[0], finding_2022.citations[0]],
+    )
+
+    def selector(messages: Sequence[ChatMessage]) -> Finding:
+        content = messages[-1].content
+        if "Per-year findings:" in content:
+            return (
+                corrected_aggregate
+                if _RETRY_MARKER in content
+                else fabricated_aggregate
+            )
+        if "fiscal year 2021" in content:
+            return finding_2021
+        if "fiscal year 2022" in content:
+            return finding_2022
+        raise AssertionError(f"No fake finding configured for prompt: {content!r}")
+
+    chat_client = FakeChatClient(query="fern quartz lantern", finding_selector=selector)
+
+    finding = await investigate(
+        session,
+        chat_client,
+        "How did the fern quartz lantern count change from 2021 to 2022?",
+        context_pages=1,
+    )
+
+    assert finding == corrected_aggregate
+    # 2021 + 2022 cost one call each, aggregation costs two (fabricated + retry).
+    assert len(chat_client.complete_structured_calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_investigate_tolerates_a_clean_quote_against_ocr_noisy_digit_separators(
+    session: AsyncSession, company: Company
+) -> None:
+    """Regression test for a real observed failure: the page's OCR text uses "." instead of "," as a thousands separator and stray underscore leaders (e.g. "437.629 __260.674"), but the model naturally quotes the clean form ("437,629 260,674"). This must pass on the first attempt, not be treated as a fabricated quote (see README's "Verifying citation quotes" section)."""
+    extraction = await _create_filing_with_pages(
+        session,
+        "investigation-ocr-noise-digits",
+        ["Hazel current turnover total 437.629 __260.674 for the noted period."],
+    )
+    clean_quote_finding = Finding(
+        claim="Hazel current turnover total was 437,629.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="turnover total 437,629 260,674 for the noted period",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="hazel current turnover", finding=clean_quote_finding
+    )
+
+    finding = await investigate(
+        session, chat_client, "What was hazel current turnover total?"
+    )
+
+    assert finding == clean_quote_finding
+    assert len(chat_client.complete_structured_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_investigate_tolerates_a_clean_quote_against_ocr_mismatched_brackets(
+    session: AsyncSession, company: Company
+) -> None:
+    """Regression test for a real observed failure: the page's OCR text pairs a curly brace with a parenthesis (e.g. "{Appointed 9 January 2023)"), but the model naturally quotes matched parentheses. This must pass on the first attempt."""
+    extraction = await _create_filing_with_pages(
+        session,
+        "investigation-ocr-noise-brackets",
+        ["Ivory falcon meridian appointed {Appointed 9 January 2023) to the board."],
+    )
+    clean_quote_finding = Finding(
+        claim="Ivory falcon meridian was appointed 9 January 2023.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="appointed (Appointed 9 January 2023) to the board",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="ivory falcon meridian", finding=clean_quote_finding
+    )
+
+    finding = await investigate(
+        session, chat_client, "When was ivory falcon meridian appointed?"
+    )
+
+    assert finding == clean_quote_finding
+    assert len(chat_client.complete_structured_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_investigate_still_rejects_a_genuinely_different_fabricated_number(
+    session: AsyncSession, company: Company
+) -> None:
+    """The OCR-noise tolerance above must not become so permissive that a genuinely different, fabricated figure slips through undetected."""
+    extraction = await _create_filing_with_pages(
+        session,
+        "investigation-ocr-noise-negative",
+        ["Juniper opal cascade total was 100 for the period."],
+    )
+    fabricated_finding = Finding(
+        claim="Juniper opal cascade total was 999.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="total was 999 for the period",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="juniper opal cascade", finding=fabricated_finding
+    )
+
+    with pytest.raises(InvestigationAgentError):
+        await investigate(session, chat_client, "What was juniper opal cascade total?")
