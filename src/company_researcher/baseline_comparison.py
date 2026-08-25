@@ -1,36 +1,23 @@
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
 
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from company_researcher.baseline_agent import (
-    UsageAwareChatProvider,
-    answer_without_retrieval,
-)
+from company_researcher.baseline_agent import answer_without_retrieval
 from company_researcher.db.models import DocumentPage
 from company_researcher.investigation_agent import (
     Citation,
     Finding,
     InvestigationAgentError,
-    investigate,
+    investigate_with_usage,
 )
-from company_researcher.llm_client import ChatProvider, ChatUsage
+from company_researcher.llm_client import ChatUsage, UsageAwareChatProvider
 from company_researcher.retrieval_evaluation import (
     EvaluationDataset,
     EvaluationQuestion,
 )
-
-
-class ComparisonChatProvider(ChatProvider, UsageAwareChatProvider, Protocol):
-    """Boundary needed to run both sides of the comparison with one client.
-
-    `investigate()` needs `ChatProvider`; `answer_without_retrieval` needs
-    `UsageAwareChatProvider`. `ChatClient` already satisfies both
-    structurally, so callers pass one real client for both roles.
-    """
 
 
 @dataclass(frozen=True)
@@ -61,6 +48,7 @@ class QuestionComparison:
     baseline_latency_seconds: float
     baseline_citation_realism: tuple[CitationRealism, ...]
     specialized_finding: Finding | None
+    specialized_usage: ChatUsage | None
     specialized_error: str | None
     specialized_latency_seconds: float
 
@@ -95,7 +83,7 @@ async def _citation_realism(
 
 async def compare_question(
     session: AsyncSession,
-    chat_client: ComparisonChatProvider,
+    chat_client: UsageAwareChatProvider,
     question: EvaluationQuestion,
     company_number: str,
     company_name: str,
@@ -118,10 +106,11 @@ async def compare_question(
     )
 
     specialized_finding: Finding | None = None
+    specialized_usage: ChatUsage | None = None
     specialized_error: str | None = None
     specialized_start = time.monotonic()
     try:
-        specialized_finding = await investigate(
+        specialized_finding, specialized_usage = await investigate_with_usage(
             session, chat_client, question.text, company_number
         )
     except InvestigationAgentError as error:
@@ -136,6 +125,7 @@ async def compare_question(
         baseline_latency_seconds=baseline_latency,
         baseline_citation_realism=baseline_realism,
         specialized_finding=specialized_finding,
+        specialized_usage=specialized_usage,
         specialized_error=specialized_error,
         specialized_latency_seconds=specialized_latency,
     )
@@ -143,7 +133,7 @@ async def compare_question(
 
 async def run_comparison(
     session: AsyncSession,
-    chat_client: ComparisonChatProvider,
+    chat_client: UsageAwareChatProvider,
     dataset: EvaluationDataset,
 ) -> list[QuestionComparison]:
     """Run the baseline-vs-specialized comparison over every question in a dataset."""

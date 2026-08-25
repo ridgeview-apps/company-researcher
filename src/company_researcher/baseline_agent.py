@@ -1,13 +1,7 @@
-from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, TypeVar
-
-from pydantic import BaseModel
 
 from company_researcher.investigation_agent import Finding
-from company_researcher.llm_client import ChatMessage, ChatUsage
-
-_StructuredResponse = TypeVar("_StructuredResponse", bound=BaseModel)
+from company_researcher.llm_client import ChatMessage, ChatUsage, UsageAwareChatProvider
 
 _BASELINE_SYSTEM_PROMPT = (
     "You are answering a question about a specific UK company using only "
@@ -19,23 +13,6 @@ _BASELINE_SYSTEM_PROMPT = (
     "citations empty rather than inventing one. Set evidence_sufficient to "
     "false if you are not confident in your answer rather than guessing."
 )
-
-
-class UsageAwareChatProvider(Protocol):
-    """Boundary for structured chat completion that also reports token usage.
-
-    A separate, narrower protocol from `ChatProvider` (used throughout
-    `investigation_agent.py`) rather than an addition to it: extending
-    `ChatProvider` itself would force every existing fake chat client in
-    `test_investigation_agent.py` to also implement usage reporting, for a
-    capability only this baseline path needs.
-    """
-
-    async def complete_structured_with_usage(
-        self,
-        messages: Sequence[ChatMessage],
-        response_model: type[_StructuredResponse],
-    ) -> tuple[_StructuredResponse, ChatUsage | None]: ...
 
 
 @dataclass(frozen=True)

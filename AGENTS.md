@@ -552,17 +552,43 @@ another distinct, unhandled OCR substitution (`£43:4m` for `£43.4m`, a
 colon in place of the decimal point), deliberately left open rather
 than patched inline mid-comparison, the same way the earlier
 "©"-and-hyphen fix was scoped as its own agreed change. Latency:
-baseline ~1-3s (one call); specialized ~2-16s (multi-step). Cost is
-measured for the baseline only in this slice — `investigate()` itself
-was not changed to use the new usage-aware client methods, an
-asymmetry recorded rather than implied away. See README.md's "Compare
-the specialized agent against a general-LLM baseline" section for the
-full detail. This is a first real measurement in the specialized
-system's favor on auditability/groundedness specifically, not a claim
-it wins on every dimension, and not a substitute for the brief's fuller
-comparison (a real second baseline, human-calibrated factual-accuracy
-scoring, temporal-leakage testing), which remains separate, deliberately
-unstarted work.
+baseline ~1-3s (one call); specialized ~2-16s (multi-step).
+
+The cost asymmetry that first run flagged (baseline-only measurement)
+is now closed: `investigation_agent.py`'s query generation, every
+synthesis call (including retries), and every multi-year per-year/
+aggregation call now use the usage-aware client methods, accumulating
+into `InvestigationState["usage_records"]` and summed by `_sum_usage`.
+`investigate()`'s own signature and return type are unchanged — every
+existing caller (the CLI's `investigate` command, every test in
+`test_investigation_agent.py`) is unaffected — a new
+`investigate_with_usage()` exposes the total for callers that want it,
+`baseline_comparison.py` among them. One honest limitation remains: on
+`investigate()`'s failure path, `InvestigationAgentError` propagates
+before any usage total is computed, so a failed specialized run reports
+no cost at all despite real tokens spent reaching that failure — cost
+is only ever visible on success.
+
+Re-running both datasets again (a separate pair of real runs; 8 of 12
+specialized answers succeeded this time rather than 5, consistent with
+the LLM-sampling variance already documented elsewhere in this project;
+the baseline also fabricated a *third*, differently wrong Nothing
+Technology FY2023 figure this run — £23m/£5m, matching neither the real
+£49.6m/£59.4m nor its own prior run's equally wrong £45m/£20m guess):
+baseline cost was flat, 327–375 tokens (mean 352); specialized cost,
+measured only on the 8 successes, ranged 2,826–17,001 tokens (mean
+7,471) — roughly **21x** the baseline's mean. The most expensive run by
+far was the four-filing FY2021–FY2025 turnover-trend question (17,001
+tokens), reflecting real, structural cost from the multi-year
+decomposition path's several grounded LLM calls, not overhead to
+optimize away. See README.md's "Compare the specialized agent against a
+general-LLM baseline" section for the full detail. This is a first real
+measurement in the specialized system's favor on auditability/
+groundedness specifically, not a claim it wins on every dimension — it
+is slower and costs substantially more when it succeeds — and not a
+substitute for the brief's fuller comparison (a real second baseline,
+human-calibrated factual-accuracy scoring, temporal-leakage testing),
+which remains separate, deliberately unstarted work.
 
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the

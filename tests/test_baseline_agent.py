@@ -19,6 +19,13 @@ class FakeUsageAwareChatClient:
         self._usage = usage
         self.complete_structured_calls: list[Sequence[ChatMessage]] = []
 
+    async def complete_with_usage(
+        self, messages: Sequence[ChatMessage]
+    ) -> tuple[str, ChatUsage | None]:
+        raise AssertionError(
+            "answer_without_retrieval should not call complete_with_usage"
+        )
+
     async def complete_structured_with_usage(
         self,
         messages: Sequence[ChatMessage],

@@ -14,7 +14,7 @@ from company_researcher.fiscal_year_lookup import (
     document_extraction_ids_for_fiscal_year,
 )
 from company_researcher.lexical_search import PageMatch, search_pages
-from company_researcher.llm_client import ChatMessage, ChatProvider
+from company_researcher.llm_client import ChatMessage, ChatUsage, UsageAwareChatProvider
 
 DEFAULT_SEARCH_DEPTH = 50
 DEFAULT_CONTEXT_PAGES = 5
@@ -168,6 +168,24 @@ class InvestigationState(TypedDict, total=False):
     retrieved_pages: list[RetrievedPage]
     year_evidence: list[YearEvidence]
     finding: Finding
+    usage_records: list[ChatUsage]
+
+
+def _sum_usage(records: Sequence[ChatUsage]) -> ChatUsage | None:
+    """Sum token usage across every LLM call an investigation made.
+
+    Returns `None` only if no call in the run reported usage at all
+    (e.g. every fake client in a test), rather than a zero-valued
+    `ChatUsage` that would misleadingly imply a real, metered run that
+    happened to cost nothing.
+    """
+    if not records:
+        return None
+    return ChatUsage(
+        prompt_tokens=sum(record.prompt_tokens for record in records),
+        completion_tokens=sum(record.completion_tokens for record in records),
+        total_tokens=sum(record.total_tokens for record in records),
+    )
 
 
 async def _load_page_texts(
@@ -304,11 +322,11 @@ def _format_quote_correction_request(mismatches: Sequence[Citation]) -> str:
 
 
 async def _synthesize_and_validate(
-    chat_client: ChatProvider,
+    chat_client: UsageAwareChatProvider,
     system_prompt: str,
     user_message: str,
     retrieved_pages: Sequence[RetrievedPage],
-) -> Finding:
+) -> tuple[Finding, list[ChatUsage]]:
     """Run one structured synthesis call and enforce both citation guarantees.
 
     Every citation must reference a page that was actually retrieved
@@ -318,26 +336,32 @@ async def _synthesize_and_validate(
     excerpt of that page's real text (`_find_quote_mismatches`). A failed
     quote check retries the synthesis once with feedback naming exactly
     which quote was wrong, giving the model a chance to self-correct
-    before this raises `InvestigationAgentError`.
+    before this raises `InvestigationAgentError`. Returns every call's
+    token usage alongside the finding (one entry normally, two if a
+    retry happened), so callers can accumulate a running total across the
+    whole investigation.
     """
     messages = [
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_message),
     ]
-    finding = await chat_client.complete_structured(messages, Finding)
+    finding, usage = await chat_client.complete_structured_with_usage(messages, Finding)
+    usage_records = [usage] if usage is not None else []
     _validate_citations(finding, retrieved_pages)
     mismatches = _find_quote_mismatches(finding, retrieved_pages)
     if not mismatches:
-        return finding
+        return finding, usage_records
 
     retry_message = f"{user_message}\n\n{_format_quote_correction_request(mismatches)}"
-    retried_finding = await chat_client.complete_structured(
+    retried_finding, retry_usage = await chat_client.complete_structured_with_usage(
         [
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=retry_message),
         ],
         Finding,
     )
+    if retry_usage is not None:
+        usage_records.append(retry_usage)
     _validate_citations(retried_finding, retrieved_pages)
     remaining_mismatches = _find_quote_mismatches(retried_finding, retrieved_pages)
     if remaining_mismatches:
@@ -347,7 +371,7 @@ async def _synthesize_and_validate(
             f"page_number={citation.page_number} with a supporting_text quote that is "
             "not verbatim text from that page, even after a self-correction retry"
         )
-    return retried_finding
+    return retried_finding, usage_records
 
 
 def _format_evidence_text(pages: Sequence[RetrievedPage], *, empty_message: str) -> str:
@@ -387,7 +411,7 @@ def _route_after_generate_query(state: InvestigationState) -> str:
 
 def _build_graph(
     session: AsyncSession,
-    chat_client: ChatProvider,
+    chat_client: UsageAwareChatProvider,
     *,
     search_depth: int,
     context_pages: int,
@@ -406,7 +430,7 @@ def _build_graph(
     """
 
     async def generate_query_node(state: InvestigationState) -> InvestigationState:
-        query = await chat_client.complete(
+        query, usage = await chat_client.complete_with_usage(
             [
                 ChatMessage(role="system", content=_QUERY_SYSTEM_PROMPT),
                 ChatMessage(role="user", content=state["question"]),
@@ -419,6 +443,7 @@ def _build_graph(
             "generated_query": forced_query,
             "fiscal_year": fiscal_year,
             "fiscal_year_range": _fiscal_year_range(years),
+            "usage_records": [usage] if usage is not None else [],
         }
 
     async def retrieve_evidence_node(state: InvestigationState) -> InvestigationState:
@@ -466,10 +491,13 @@ def _build_graph(
             pages, empty_message="No evidence pages were retrieved for this question."
         )
         user_message = f"Question: {state['question']}\n\nAvailable evidence pages:\n\n{evidence_text}"
-        finding = await _synthesize_and_validate(
+        finding, usage_records = await _synthesize_and_validate(
             chat_client, _FINDING_SYSTEM_PROMPT, user_message, pages
         )
-        return {"finding": finding}
+        return {
+            "finding": finding,
+            "usage_records": state.get("usage_records", []) + usage_records,
+        }
 
     async def gather_year_findings_node(
         state: InvestigationState,
@@ -477,6 +505,7 @@ def _build_graph(
         question = state["question"]
         query = state["generated_query"]
         year_evidence: list[YearEvidence] = []
+        all_usage_records: list[ChatUsage] = []
         for year in state["fiscal_year_range"]:
             document_extraction_ids = await document_extraction_ids_for_fiscal_year(
                 session, year
@@ -497,13 +526,17 @@ def _build_graph(
                 f"Question: {question}\n\nFocus specifically on fiscal year {year}.\n\n"
                 f"Available evidence pages:\n\n{evidence_text}"
             )
-            finding = await _synthesize_and_validate(
+            finding, usage_records = await _synthesize_and_validate(
                 chat_client, _FINDING_SYSTEM_PROMPT, user_message, pages
             )
+            all_usage_records.extend(usage_records)
             year_evidence.append(
                 YearEvidence(fiscal_year=year, retrieved_pages=pages, finding=finding)
             )
-        return {"year_evidence": year_evidence}
+        return {
+            "year_evidence": year_evidence,
+            "usage_records": state.get("usage_records", []) + all_usage_records,
+        }
 
     async def aggregate_findings_node(state: InvestigationState) -> InvestigationState:
         year_evidence = state["year_evidence"]
@@ -514,10 +547,13 @@ def _build_graph(
         all_pages = [
             page for evidence in year_evidence for page in evidence.retrieved_pages
         ]
-        finding = await _synthesize_and_validate(
+        finding, usage_records = await _synthesize_and_validate(
             chat_client, _AGGREGATE_SYSTEM_PROMPT, user_message, all_pages
         )
-        return {"finding": finding}
+        return {
+            "finding": finding,
+            "usage_records": state.get("usage_records", []) + usage_records,
+        }
 
     graph = StateGraph(InvestigationState)
     graph.add_node("generate_query", generate_query_node)
@@ -541,9 +577,33 @@ def _build_graph(
     return graph.compile()
 
 
+async def _run_graph(
+    session: AsyncSession,
+    chat_client: UsageAwareChatProvider,
+    question: str,
+    company_number: str,
+    *,
+    search_depth: int,
+    context_pages: int,
+) -> InvestigationState:
+    """Build and run the investigation graph, returning its final state.
+
+    Shared by `investigate()` and `investigate_with_usage()` so the two
+    differ only in what they read out of the final state, not in how the
+    graph itself is built or invoked.
+    """
+    graph = _build_graph(
+        session, chat_client, search_depth=search_depth, context_pages=context_pages
+    )
+    return cast(
+        InvestigationState,
+        await graph.ainvoke({"question": question, "company_number": company_number}),
+    )
+
+
 async def investigate(
     session: AsyncSession,
-    chat_client: ChatProvider,
+    chat_client: UsageAwareChatProvider,
     question: str,
     company_number: str,
     *,
@@ -565,10 +625,44 @@ async def investigate(
     call site must be explicit about which one rather than silently
     searching across every persisted company's filings.
     """
-    graph = _build_graph(
-        session, chat_client, search_depth=search_depth, context_pages=context_pages
+    result = await _run_graph(
+        session,
+        chat_client,
+        question,
+        company_number,
+        search_depth=search_depth,
+        context_pages=context_pages,
     )
-    result = await graph.ainvoke(
-        {"question": question, "company_number": company_number}
+    return result["finding"]
+
+
+async def investigate_with_usage(
+    session: AsyncSession,
+    chat_client: UsageAwareChatProvider,
+    question: str,
+    company_number: str,
+    *,
+    search_depth: int = DEFAULT_SEARCH_DEPTH,
+    context_pages: int = DEFAULT_CONTEXT_PAGES,
+) -> tuple[Finding, ChatUsage | None]:
+    """Run one investigation and also return its total token usage.
+
+    A separate function from `investigate` rather than a change to it, so
+    every existing caller (the CLI's `investigate` command, and every
+    test in `test_investigation_agent.py`) is unaffected - the same
+    pattern `ChatClient.complete_with_usage` already established. Sums
+    token usage across every LLM call the run made (query generation,
+    every synthesis call including retries, and - for a multi-year
+    question - every per-year pass plus the final aggregation); see
+    `_sum_usage`.
+    """
+    result = await _run_graph(
+        session,
+        chat_client,
+        question,
+        company_number,
+        search_depth=search_depth,
+        context_pages=context_pages,
     )
-    return cast(Finding, result["finding"])
+    usage = _sum_usage(result.get("usage_records", []))
+    return result["finding"], usage

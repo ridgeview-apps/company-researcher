@@ -46,6 +46,36 @@ class ChatProvider(Protocol):
         ...
 
 
+class UsageAwareChatProvider(Protocol):
+    """Boundary for chat completion that also reports token usage.
+
+    A separate protocol from `ChatProvider` rather than an addition to it,
+    so callers that only need `complete`/`complete_structured` (and their
+    test fakes, in particular `investigation_agent.py`'s original
+    single-question path before usage tracking existed) are unaffected by
+    this capability. Bundles both methods the same way `ChatProvider`
+    itself does, even though a given call site may only ever use one of
+    them - `investigation_agent.py` needs both (query generation calls
+    `complete_with_usage`, synthesis calls `complete_structured_with_usage`),
+    and `baseline_agent.py` only needs the structured one, but a single
+    shared protocol is simpler than two near-duplicates.
+    """
+
+    async def complete_with_usage(
+        self, messages: Sequence[ChatMessage]
+    ) -> tuple[str, ChatUsage | None]:
+        """Complete a chat, returning the response text alongside token usage."""
+        ...
+
+    async def complete_structured_with_usage(
+        self,
+        messages: Sequence[ChatMessage],
+        response_model: type[StructuredResponse],
+    ) -> tuple[StructuredResponse, ChatUsage | None]:
+        """Complete a structured chat, returning the result alongside token usage."""
+        ...
+
+
 class ChatError(Exception):
     """Base exception for chat-provider integration failures."""
 

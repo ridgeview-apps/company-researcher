@@ -1493,11 +1493,25 @@ agent refusing to serve a fabricated or unretrieved citation is itself
 part of what this comparison measures. `llm_client.py`'s `ChatClient`
 gained `complete_with_usage`/`complete_structured_with_usage` (parsing
 the `usage` field the API response already includes but the client
-previously discarded) so the baseline's token cost could be measured
-too - added as new methods alongside the existing `complete`/
+previously discarded) as new methods alongside the existing `complete`/
 `complete_structured`, not a change to them, so the `ChatProvider`
-protocol and every existing caller (in particular `investigation_agent.py`
-and its fakes in `test_investigation_agent.py`) stay untouched.
+protocol and every existing caller stays untouched. `investigation_agent.py`
+was then extended to use them throughout - query generation, every
+synthesis call including retries, and (for a multi-year question) every
+per-year pass plus the final aggregation - accumulating a running token
+total in graph state (`InvestigationState["usage_records"]`, summed by a
+small `_sum_usage` helper) without changing `investigate()`'s own
+signature or return type, so its existing callers (the CLI's
+`investigate` command, and every test in `test_investigation_agent.py`)
+are unaffected; a new `investigate_with_usage()` function exposes the
+total for callers - `baseline_comparison.py` among them - that want it.
+Cost is measured for both sides now, closing the asymmetry an earlier
+version of this milestone flagged, with one honest limitation still
+recorded rather than glossed over: on the specialized agent's failure
+path, `InvestigationAgentError` propagates before any usage total is
+computed, so a *failed* specialized run reports no cost at all, even
+though real tokens were spent reaching that failure - cost is only ever
+visible on a successful run.
 
 ```bash
 uv run company-researcher compare-baseline
@@ -1511,10 +1525,8 @@ scoring (factual accuracy below was checked by direct comparison against
 each question's already-written, manually-verified `note` field);
 material-event recall and completeness scoring; temporal/future-leakage
 testing (no as-of retrieval capability exists yet to test it against);
-and specialized-agent token cost, since `investigate()` itself was not
-changed to use the new usage-aware client methods - only the baseline's
-cost is measured here, asymmetrically, and that asymmetry is recorded
-rather than implied away.
+and cost on the specialized agent's failure path (see the limitation
+just above).
 
 ### Observed real-run result
 
@@ -1560,20 +1572,46 @@ consistently fast (roughly 1-3 seconds, a single LLM call); the
 specialized agent is slower and more variable (roughly 2-16 seconds,
 reflecting its multiple retrieval and synthesis steps, including a
 16-second run for the four-filing FY2021-FY2025 turnover-trend
-question). Token cost, baseline only (see the asymmetry noted above):
-roughly 330-380 tokens per question, cheap by construction since there
-is no retrieved evidence text in the prompt.
+question).
+
+### Observed cost result
+
+After cost was extended to the specialized agent too, both datasets were
+re-run again (12 questions, a separate pair of real runs from the one
+above - LLM sampling means the specific successes/failures differ
+run to run, as already documented elsewhere in this project; this run
+saw 8 of 12 specialized answers succeed rather than 5, and the baseline
+fabricated yet another, differently wrong Nothing Technology FY2023
+figure - "£23 million" revenue and "£5 million" loss this time, neither
+matching the real £49.6m/£59.4m nor its own previous run's equally wrong
+"£45 million"/"£20 million" guess, underscoring that the baseline's
+fabrications are not even consistent with themselves across runs, only
+consistently confident).
+
+The baseline's token cost was flat and cheap across every question in
+both runs - 327 to 375 tokens (mean 352), unsurprising given its prompt
+never contains retrieved evidence text at all. The specialized agent's
+cost, measured only on its 8 successful runs (per the failure-path
+limitation above), ranged from 2,826 to 17,001 tokens (mean 7,471) -
+roughly **21x** the baseline's mean cost, and highly dependent on
+question shape: the cheapest successful runs were single-page,
+single-year questions; the most expensive by far was the four-filing
+FY2021-FY2025 turnover-trend question (17,001 tokens), which triggers
+the multi-year decomposition path's per-year retrieval-and-synthesis
+passes plus a final aggregation call - real, structural cost from doing
+several grounded LLM calls instead of one ungrounded one, not overhead
+to optimize away.
 
 This is a genuine, if narrow, first measurement in the specialized
 system's favor on the specific dimension the project brief cares about
 most - auditability and groundedness - not a demonstration that it wins
-on every dimension (it is slower, and it answers fewer questions
-completely, precisely because it refuses rather than guesses). Do not
-read more into 12 questions than the sample supports; this is a first
-real slice, not a final verdict, and the brief's fuller comparison
-(a second, real-tool-using baseline, human-calibrated factual-accuracy
-scoring, temporal-leakage testing) remains open, deliberately unstarted
-work.
+on every dimension: it is slower, it costs roughly 21x more in tokens
+when it succeeds, and it answers fewer questions completely, precisely
+because it refuses rather than guesses. Do not read more into 12
+questions than the sample supports; this is a first real slice, not a
+final verdict, and the brief's fuller comparison (a second, real-tool-
+using baseline, human-calibrated factual-accuracy scoring, temporal-
+leakage testing) remains open, deliberately unstarted work.
 
 ## Quality checks
 

@@ -501,15 +501,21 @@ def _format_comparison_report(comparisons: list[QuestionComparison]) -> str:
         )
         lines.append(f"    claim: {baseline.claim}")
 
+        specialized_usage_text = (
+            f", tokens={comparison.specialized_usage.total_tokens}"
+            if comparison.specialized_usage is not None
+            else ""
+        )
         if comparison.specialized_error is not None:
             lines.append(
-                f"  specialized [{comparison.specialized_latency_seconds:.2f}s] "
-                f"ERROR: {comparison.specialized_error}"
+                f"  specialized [{comparison.specialized_latency_seconds:.2f}s"
+                f"{specialized_usage_text}] ERROR: {comparison.specialized_error}"
             )
         elif comparison.specialized_finding is not None:
             specialized = comparison.specialized_finding
             lines.append(
-                f"  specialized [{comparison.specialized_latency_seconds:.2f}s] "
+                f"  specialized [{comparison.specialized_latency_seconds:.2f}s"
+                f"{specialized_usage_text}] "
                 f"evidence_sufficient={specialized.evidence_sufficient} "
                 f"citations={len(specialized.citations)}"
             )

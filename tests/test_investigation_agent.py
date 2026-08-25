@@ -24,8 +24,9 @@ from company_researcher.investigation_agent import (
     _force_unambiguous_fiscal_year,
     _normalize_for_quote_check,
     investigate,
+    investigate_with_usage,
 )
-from company_researcher.llm_client import ChatMessage
+from company_researcher.llm_client import ChatMessage, ChatUsage
 
 TEST_COMPANY_NUMBER = "TE000008"
 
@@ -33,13 +34,16 @@ _StructuredResponse = TypeVar("_StructuredResponse", bound=BaseModel)
 
 
 class FakeChatClient:
-    """Returns a fixed query for `complete`.
+    """Returns a fixed query for `complete_with_usage`.
 
-    `complete_structured` returns `finding` on every call unless
-    `finding_selector` is given, in which case it picks a response by
-    inspecting each call's messages - needed for multi-year tests, where
-    `complete_structured` is called once per fiscal year plus once more to
-    aggregate, each expecting a different fake response.
+    `complete_structured_with_usage` returns `finding` on every call
+    unless `finding_selector` is given, in which case it picks a response
+    by inspecting each call's messages - needed for multi-year tests,
+    where it is called once per fiscal year plus once more to aggregate,
+    each expecting a different fake response. `usage` defaults to `None`
+    since most tests exercise `investigate()`'s behavior, not token
+    accounting; pass a fixed `ChatUsage` to also verify accumulation via
+    `investigate_with_usage`.
     """
 
     def __init__(
@@ -48,25 +52,31 @@ class FakeChatClient:
         query: str,
         finding: Finding | None = None,
         finding_selector: Callable[[Sequence[ChatMessage]], Finding] | None = None,
+        usage: ChatUsage | None = None,
     ) -> None:
         self._query = query
         self._finding = finding
         self._finding_selector = finding_selector
+        self._usage = usage
         self.complete_calls: list[Sequence[ChatMessage]] = []
         self.complete_structured_calls: list[Sequence[ChatMessage]] = []
 
-    async def complete(self, messages: Sequence[ChatMessage]) -> str:
+    async def complete_with_usage(
+        self, messages: Sequence[ChatMessage]
+    ) -> tuple[str, ChatUsage | None]:
         self.complete_calls.append(messages)
-        return self._query
+        return self._query, self._usage
 
-    async def complete_structured(
+    async def complete_structured_with_usage(
         self, messages: Sequence[ChatMessage], response_model: type[_StructuredResponse]
-    ) -> _StructuredResponse:
+    ) -> tuple[_StructuredResponse, ChatUsage | None]:
         self.complete_structured_calls.append(messages)
         if self._finding_selector is not None:
-            return cast(_StructuredResponse, self._finding_selector(messages))
+            return cast(
+                _StructuredResponse, self._finding_selector(messages)
+            ), self._usage
         assert self._finding is not None
-        return cast(_StructuredResponse, self._finding)
+        return cast(_StructuredResponse, self._finding), self._usage
 
 
 def _finding_selector_by_year(
@@ -1266,3 +1276,168 @@ async def test_investigate_still_rejects_a_genuinely_different_fabricated_number
             "What was juniper opal cascade total?",
             company_number=TEST_COMPANY_NUMBER,
         )
+
+
+@pytest.mark.asyncio
+async def test_investigate_with_usage_sums_query_and_synthesis_calls(
+    session: AsyncSession, company: Company
+) -> None:
+    await _create_filing_with_pages(
+        session,
+        "investigation-usage-single-year",
+        ["Foxtrot golf hotel disclosure of a figure."],
+    )
+    finding = Finding(
+        claim="Foxtrot golf hotel figure disclosed.",
+        evidence_sufficient=False,
+        citations=[],
+    )
+    per_call_usage = ChatUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    chat_client = FakeChatClient(
+        query="zqxvwkploqnhfbyt", finding=finding, usage=per_call_usage
+    )
+
+    result_finding, usage = await investigate_with_usage(
+        session,
+        chat_client,
+        "What is completely unrelated to this corpus?",
+        company_number=TEST_COMPANY_NUMBER,
+    )
+
+    assert result_finding == finding
+    # One call for generate_query, one for synthesize_finding.
+    assert usage == ChatUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30)
+
+
+@pytest.mark.asyncio
+async def test_investigate_with_usage_returns_none_when_client_reports_none(
+    session: AsyncSession, company: Company
+) -> None:
+    finding = Finding(claim="Unknown.", evidence_sufficient=False, citations=[])
+    chat_client = FakeChatClient(query="zqxvwkploqnhfbyt", finding=finding)
+
+    _finding, usage = await investigate_with_usage(
+        session,
+        chat_client,
+        "What is completely unrelated to this corpus?",
+        company_number=TEST_COMPANY_NUMBER,
+    )
+
+    assert usage is None
+
+
+@pytest.mark.asyncio
+async def test_investigate_with_usage_counts_a_self_correction_retry(
+    session: AsyncSession, company: Company
+) -> None:
+    extraction = await _create_filing_with_pages(
+        session,
+        "investigation-usage-retry",
+        ["Hotel india juliet disclosure states the figure was 7 in total."],
+    )
+    fabricated_finding = Finding(
+        claim="Hotel india juliet figure was 7.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="figure was seven exactly",
+            )
+        ],
+    )
+    corrected_finding = Finding(
+        claim="Hotel india juliet figure was 7.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction.id,
+                page_number=1,
+                supporting_text="figure was 7 in total",
+            )
+        ],
+    )
+    per_call_usage = ChatUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    chat_client = FakeChatClient(
+        query="hotel india juliet",
+        finding_selector=_finding_selector_with_retry(
+            fabricated_finding, corrected_finding
+        ),
+        usage=per_call_usage,
+    )
+
+    result_finding, usage = await investigate_with_usage(
+        session,
+        chat_client,
+        "What did hotel india juliet disclose?",
+        company_number=TEST_COMPANY_NUMBER,
+    )
+
+    assert result_finding == corrected_finding
+    # generate_query + the initial synthesis attempt + the retry.
+    assert usage == ChatUsage(prompt_tokens=30, completion_tokens=15, total_tokens=45)
+
+
+@pytest.mark.asyncio
+async def test_investigate_with_usage_sums_across_a_multi_year_question(
+    session: AsyncSession, company: Company
+) -> None:
+    extraction_2021 = await _create_filing_with_pages(
+        session,
+        "investigation-usage-multiyear-2021",
+        ["Kilo lima mike figure was 1 for 2021."],
+        made_up_date="2021-07-31",
+    )
+    extraction_2022 = await _create_filing_with_pages(
+        session,
+        "investigation-usage-multiyear-2022",
+        ["Kilo lima mike figure was 2 for 2022."],
+        made_up_date="2022-07-31",
+    )
+    finding_2021 = Finding(
+        claim="Kilo lima mike figure was 1 in 2021.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2021.id,
+                page_number=1,
+                supporting_text="figure was 1",
+            )
+        ],
+    )
+    finding_2022 = Finding(
+        claim="Kilo lima mike figure was 2 in 2022.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2022.id,
+                page_number=1,
+                supporting_text="figure was 2",
+            )
+        ],
+    )
+    aggregate_finding = Finding(
+        claim="Kilo lima mike figure rose from 1 in 2021 to 2 in 2022.",
+        evidence_sufficient=True,
+        citations=[finding_2021.citations[0], finding_2022.citations[0]],
+    )
+    per_call_usage = ChatUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    chat_client = FakeChatClient(
+        query="kilo lima mike",
+        finding_selector=_finding_selector_by_year(
+            {"2021": finding_2021, "2022": finding_2022}, aggregate_finding
+        ),
+        usage=per_call_usage,
+    )
+
+    result_finding, usage = await investigate_with_usage(
+        session,
+        chat_client,
+        "How did the kilo lima mike figure change from 2021 to 2022?",
+        company_number=TEST_COMPANY_NUMBER,
+        context_pages=1,
+    )
+
+    assert result_finding == aggregate_finding
+    # generate_query + one synthesis per year (2) + the final aggregation.
+    assert usage == ChatUsage(prompt_tokens=40, completion_tokens=20, total_tokens=60)

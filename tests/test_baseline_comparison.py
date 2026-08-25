@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from company_researcher.baseline_agent import _BASELINE_SYSTEM_PROMPT
 from company_researcher.baseline_comparison import _citation_realism, compare_question
 from company_researcher.config import Settings
 from company_researcher.db.models import (
@@ -28,12 +29,14 @@ _StructuredResponse = TypeVar("_StructuredResponse", bound=BaseModel)
 
 
 class FakeComparisonChatClient:
-    """Satisfies both `ChatProvider` (for `investigate()`) and `UsageAwareChatProvider` (for the baseline).
+    """Satisfies `UsageAwareChatProvider`, routing by which system prompt a call carries.
 
-    `complete` drives `generate_query`; `complete_structured` drives
-    `synthesize_finding`; `complete_structured_with_usage` drives the
-    no-retrieval baseline. Kept separate from `test_investigation_agent.py`'s
-    `FakeChatClient` since this one also needs the usage-aware method.
+    Both `investigate_with_usage()` (query generation + synthesis) and
+    `answer_without_retrieval()` (the baseline) now call the same
+    `complete_with_usage`/`complete_structured_with_usage` methods on one
+    shared client, so this fake distinguishes them by inspecting the
+    system message: the baseline's is `_BASELINE_SYSTEM_PROMPT` exactly,
+    everything else is treated as the specialized agent's call.
     """
 
     def __init__(
@@ -43,20 +46,19 @@ class FakeComparisonChatClient:
         specialized_finding: Finding,
         baseline_finding: Finding,
         baseline_usage: ChatUsage | None = None,
+        specialized_usage: ChatUsage | None = None,
     ) -> None:
         self._query = query
         self._specialized_finding = specialized_finding
         self._baseline_finding = baseline_finding
         self._baseline_usage = baseline_usage
+        self._specialized_usage = specialized_usage
         self.complete_structured_with_usage_calls: list[Sequence[ChatMessage]] = []
 
-    async def complete(self, messages: Sequence[ChatMessage]) -> str:
-        return self._query
-
-    async def complete_structured(
-        self, messages: Sequence[ChatMessage], response_model: type[_StructuredResponse]
-    ) -> _StructuredResponse:
-        return cast(_StructuredResponse, self._specialized_finding)
+    async def complete_with_usage(
+        self, messages: Sequence[ChatMessage]
+    ) -> tuple[str, ChatUsage | None]:
+        return self._query, self._specialized_usage
 
     async def complete_structured_with_usage(
         self,
@@ -64,7 +66,13 @@ class FakeComparisonChatClient:
         response_model: type[_StructuredResponse],
     ) -> tuple[_StructuredResponse, ChatUsage | None]:
         self.complete_structured_with_usage_calls.append(messages)
-        return cast(_StructuredResponse, self._baseline_finding), self._baseline_usage
+        if messages[0].content == _BASELINE_SYSTEM_PROMPT:
+            return cast(
+                _StructuredResponse, self._baseline_finding
+            ), self._baseline_usage
+        return cast(
+            _StructuredResponse, self._specialized_finding
+        ), self._specialized_usage
 
 
 @pytest_asyncio.fixture
@@ -226,12 +234,16 @@ async def test_compare_question_reports_both_findings_and_citation_realism(
             )
         ],
     )
-    usage = ChatUsage(prompt_tokens=40, completion_tokens=15, total_tokens=55)
+    baseline_usage = ChatUsage(prompt_tokens=40, completion_tokens=15, total_tokens=55)
+    specialized_call_usage = ChatUsage(
+        prompt_tokens=10, completion_tokens=5, total_tokens=15
+    )
     chat_client = FakeComparisonChatClient(
         query="november oscar papa",
         specialized_finding=specialized_finding,
         baseline_finding=baseline_finding,
-        baseline_usage=usage,
+        baseline_usage=baseline_usage,
+        specialized_usage=specialized_call_usage,
     )
     question = EvaluationQuestion(
         id="q-fake",
@@ -251,8 +263,12 @@ async def test_compare_question_reports_both_findings_and_citation_realism(
     assert comparison.question_id == "q-fake"
     assert comparison.specialized_finding == specialized_finding
     assert comparison.specialized_error is None
+    # generate_query + synthesize_finding each contribute specialized_call_usage.
+    assert comparison.specialized_usage == ChatUsage(
+        prompt_tokens=20, completion_tokens=10, total_tokens=30
+    )
     assert comparison.baseline_finding == baseline_finding
-    assert comparison.baseline_usage == usage
+    assert comparison.baseline_usage == baseline_usage
     assert comparison.baseline_latency_seconds >= 0
     assert comparison.specialized_latency_seconds >= 0
     assert len(comparison.baseline_citation_realism) == 1
