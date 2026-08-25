@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import Text, func, select
@@ -18,13 +19,23 @@ class PageMatch:
 
 
 async def search_pages(
-    session: AsyncSession, query: str, *, limit: int
+    session: AsyncSession,
+    query: str,
+    *,
+    limit: int,
+    document_extraction_ids: Sequence[int] | None = None,
 ) -> list[PageMatch]:
     """Rank document pages by PostgreSQL full-text search relevance to `query`.
 
     Query terms are OR-combined rather than AND-combined: `plainto_tsquery`
     alone requires every term to appear on the same page, which almost never
     holds for a multi-word natural-language question against a single page.
+
+    `document_extraction_ids`, when given, restricts candidates to those
+    extractions before ranking -- e.g. scoping to filings for one fiscal
+    year. Defaults to no restriction so existing callers (in particular
+    retrieval evaluation, whose measured baseline must stay unaffected) are
+    unchanged.
     """
     stemmed_terms = func.plainto_tsquery(_TEXT_SEARCH_CONFIGURATION, query).cast(Text)
     tsquery = func.to_tsquery(
@@ -32,12 +43,14 @@ async def search_pages(
     )
     tsvector = func.to_tsvector(_TEXT_SEARCH_CONFIGURATION, DocumentPage.text)
     rank = func.ts_rank(tsvector, tsquery).label("rank")
-    statement = (
-        select(DocumentPage.document_extraction_id, DocumentPage.page_number, rank)
-        .where(tsvector.op("@@")(tsquery))
-        .order_by(rank.desc())
-        .limit(limit)
-    )
+    statement = select(
+        DocumentPage.document_extraction_id, DocumentPage.page_number, rank
+    ).where(tsvector.op("@@")(tsquery))
+    if document_extraction_ids is not None:
+        statement = statement.where(
+            DocumentPage.document_extraction_id.in_(document_extraction_ids)
+        )
+    statement = statement.order_by(rank.desc()).limit(limit)
     result = await session.execute(statement)
     return [
         PageMatch(

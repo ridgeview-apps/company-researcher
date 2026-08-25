@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.config import Settings
@@ -39,19 +39,30 @@ async def session() -> AsyncIterator[AsyncSession]:
         await engine.dispose()
 
 
-async def _create_pages(session: AsyncSession, texts: list[str]) -> DocumentExtraction:
+async def _create_pages(
+    session: AsyncSession,
+    texts: list[str],
+    *,
+    transaction_id: str = "lexical-search-transaction",
+) -> DocumentExtraction:
     now = datetime.now(UTC)
-    company = Company(
-        company_number=TEST_COMPANY_NUMBER,
-        company_name="LEXICAL SEARCH TEST LIMITED",
-        type="ltd",
-        sic_codes=[],
-        raw_profile={},
-        retrieved_at=now,
+    company_statement = select(Company).where(
+        Company.company_number == TEST_COMPANY_NUMBER
     )
+    company = (await session.execute(company_statement)).scalar_one_or_none()
+    if company is None:
+        company = Company(
+            company_number=TEST_COMPANY_NUMBER,
+            company_name="LEXICAL SEARCH TEST LIMITED",
+            type="ltd",
+            sic_codes=[],
+            raw_profile={},
+            retrieved_at=now,
+        )
+        session.add(company)
     filing = Filing(
         company_number=TEST_COMPANY_NUMBER,
-        transaction_id="lexical-search-transaction",
+        transaction_id=transaction_id,
         category="accounts",
         type="AA",
         description="accounts",
@@ -59,14 +70,14 @@ async def _create_pages(session: AsyncSession, texts: list[str]) -> DocumentExtr
         raw_filing={},
         retrieved_at=now,
     )
-    session.add_all([company, filing])
+    session.add(filing)
     await session.flush()
     document = FilingDocument(
         filing_id=filing.id,
-        source_document_id="lexical-search-document",
+        source_document_id=f"{transaction_id}-document",
         media_type="application/pdf",
         content_length=1234,
-        sha256="b" * 64,
+        sha256=f"{abs(hash(transaction_id)):064x}"[:64],
         storage_key="sha256/test.pdf",
         source_created_at=now,
         raw_metadata={},
@@ -173,3 +184,27 @@ async def test_search_pages_respects_limit(session: AsyncSession) -> None:
     matches = await search_pages(session, "zephyrion", limit=2)
 
     assert len(matches) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_pages_restricts_to_given_document_extraction_ids(
+    session: AsyncSession,
+) -> None:
+    allowed = await _create_pages(
+        session,
+        ["Zephyrion turnover figure for the allowed extraction."],
+        transaction_id="lexical-search-allowed",
+    )
+    excluded = await _create_pages(
+        session,
+        ["Zephyrion turnover figure for the excluded extraction."],
+        transaction_id="lexical-search-excluded",
+    )
+
+    matches = await search_pages(
+        session, "zephyrion turnover", limit=500, document_extraction_ids=[allowed.id]
+    )
+    matched_extraction_ids = {m.document_extraction_id for m in matches}
+
+    assert allowed.id in matched_extraction_ids
+    assert excluded.id not in matched_extraction_ids

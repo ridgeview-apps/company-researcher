@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.db.models import DocumentPage
 from company_researcher.fiscal_year_extraction import extract_fiscal_years
+from company_researcher.fiscal_year_lookup import (
+    document_extraction_ids_for_fiscal_year,
+)
 from company_researcher.lexical_search import PageMatch, search_pages
 from company_researcher.llm_client import ChatMessage, ChatProvider
 
@@ -106,6 +109,7 @@ class InvestigationState(TypedDict, total=False):
 
     question: str
     generated_query: str
+    fiscal_year: str | None
     retrieved_pages: list[RetrievedPage]
     finding: Finding
 
@@ -172,11 +176,22 @@ def _build_graph(
             ]
         )
         forced_query = _force_unambiguous_fiscal_year(query.strip(), state["question"])
-        return {"generated_query": forced_query}
+        years = extract_fiscal_years(state["question"])
+        fiscal_year = years[0] if len(years) == 1 else None
+        return {"generated_query": forced_query, "fiscal_year": fiscal_year}
 
     async def retrieve_evidence_node(state: InvestigationState) -> InvestigationState:
+        fiscal_year = state.get("fiscal_year")
+        document_extraction_ids = None
+        if fiscal_year is not None:
+            document_extraction_ids = await document_extraction_ids_for_fiscal_year(
+                session, fiscal_year
+            )
         matches = await search_pages(
-            session, state["generated_query"], limit=search_depth
+            session,
+            state["generated_query"],
+            limit=search_depth,
+            document_extraction_ids=document_extraction_ids,
         )
         pages = await _load_page_texts(session, matches[:context_pages])
         return {"retrieved_pages": pages}

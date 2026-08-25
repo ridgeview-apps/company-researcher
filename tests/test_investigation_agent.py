@@ -121,9 +121,16 @@ async def company(session: AsyncSession) -> Company:
 
 
 async def _create_filing_with_pages(
-    session: AsyncSession, transaction_id: str, texts: list[str]
+    session: AsyncSession,
+    transaction_id: str,
+    texts: list[str],
+    *,
+    made_up_date: str | None = None,
 ) -> DocumentExtraction:
     now = datetime.now(UTC)
+    raw_filing = (
+        {"description_values": {"made_up_date": made_up_date}} if made_up_date else {}
+    )
     filing = Filing(
         company_number=TEST_COMPANY_NUMBER,
         transaction_id=transaction_id,
@@ -131,7 +138,7 @@ async def _create_filing_with_pages(
         type="AA",
         description="accounts",
         date=date(2026, 1, 1),
-        raw_filing={},
+        raw_filing=raw_filing,
         retrieved_at=now,
     )
     session.add(filing)
@@ -298,11 +305,13 @@ async def test_investigate_disambiguates_near_duplicate_pages_by_forced_year(
         session,
         "investigation-transaction-year-2023",
         ["Quebec romeo sierra tango whiskey xray disclosure for 2023."],
+        made_up_date="2023-07-31",
     )
     await _create_filing_with_pages(
         session,
         "investigation-transaction-year-2022",
         ["Quebec romeo sierra tango whiskey xray disclosure for 2022."],
+        made_up_date="2022-07-31",
     )
     expected_finding = Finding(
         claim="Quebec romeo sierra tango whiskey xray, per the 2023 filing.",
@@ -328,3 +337,77 @@ async def test_investigate_disambiguates_near_duplicate_pages_by_forced_year(
     )
 
     assert finding == expected_finding
+
+
+@pytest.mark.asyncio
+async def test_investigate_excludes_a_different_fiscal_years_filing_entirely(
+    session: AsyncSession, company: Company
+) -> None:
+    """A wrong-year filing must be excluded from evidence even if its page text
+    happens to literally contain the target year (e.g. a document amended and
+    signed in a later year than the accounting period it reports on -- the
+    real cause of the observed leak, see README.md). Filtering must key off
+    each filing's actual accounting period (`made_up_date`), not page text.
+    """
+    correct_extraction = await _create_filing_with_pages(
+        session,
+        "investigation-transaction-fy2023-real",
+        ["Yankee zulu alpha beta gamma disclosure for the year ended 2023."],
+        made_up_date="2023-07-31",
+    )
+    wrong_year_extraction = await _create_filing_with_pages(
+        session,
+        "investigation-transaction-fy2022-amended-2023",
+        # This page's accounting period is FY2022, but it literally contains
+        # "2023" too (e.g. an amendment signed in 2023) -- exactly the
+        # scenario that defeats a page-text-based year filter.
+        ["Yankee zulu alpha beta gamma disclosure, signed in 2023."],
+        made_up_date="2022-07-31",
+    )
+    hallucinated_finding = Finding(
+        claim="Fabricated claim citing the wrong fiscal year's filing.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=wrong_year_extraction.id,
+                page_number=1,
+                supporting_text="signed in 2023",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="yankee zulu alpha beta gamma disclosure", finding=hallucinated_finding
+    )
+
+    with pytest.raises(InvestigationAgentError):
+        await investigate(
+            session,
+            chat_client,
+            "What did yankee zulu alpha beta gamma disclose in the 2023 filing?",
+            context_pages=2,
+        )
+
+    # The correct FY2023 filing's page must still be reachable.
+    correct_finding = Finding(
+        claim="Yankee zulu alpha beta gamma, per the 2023 filing.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=correct_extraction.id,
+                page_number=1,
+                supporting_text="disclosure for the year ended 2023",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="yankee zulu alpha beta gamma disclosure", finding=correct_finding
+    )
+
+    finding = await investigate(
+        session,
+        chat_client,
+        "What did yankee zulu alpha beta gamma disclose in the 2023 filing?",
+        context_pages=2,
+    )
+
+    assert finding == correct_finding

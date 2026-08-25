@@ -750,17 +750,57 @@ sampling: it happened in 2 of the 8 runs — a leak rate not clearly
 better than the roughly 1-in-3 rate originally reported above, on a
 sample this small.
 
-So the honest result is a partial fix: query generation is fixed and
-retrieval ranking of the correct page is measurably strengthened, but
-cross-year evidence-mixing is not eliminated, because the residual leak
-happens at a different point — which near-duplicate pages survive into
-`context_pages` — not at query term selection. Filtering retrieved
-candidates by literal year match, or some other content-level mechanism,
-remains open and deliberately deferred rather than folded into this
-change, since it is a larger design decision (and one that could
-wrongly exclude a genuinely relevant page that doesn't happen to restate
-the year) deserving its own agreed-upon design pass, not a same-session
-follow-on patch.
+So that first change alone was a partial fix: query generation was fixed
+and retrieval ranking of the correct page was measurably strengthened,
+but cross-year evidence-mixing was not eliminated, because the residual
+leak happens at a different point — which near-duplicate pages survive
+into `context_pages` — not at query term selection.
+
+### Closing the residual leak with structured filing metadata
+
+The natural next idea — filter retrieved candidates by whether their page
+text literally contains the target year — was checked against the real
+corpus before being built, and rejected: querying the two leaking
+documents directly showed that pages from *both* the original and
+amended FY2022 filings already contain the literal string "2023",
+because Gymshark's amended FY2022 accounts were signed and filed in
+November 2023, even though they report the year ended 31 July 2022. A
+page-text filter would not have excluded them at all. This is recorded
+as a genuine negative finding about the approach originally agreed, not
+smoothed over.
+
+Instead, `fiscal_year_lookup.py` adds
+`document_extraction_ids_for_fiscal_year()`, which resolves which
+document extractions belong to a filing whose *actual accounting
+period* — Companies House's `made_up_date` field (the date accounts are
+"made up to"), already persisted in each filing's `raw_filing` JSON from
+ingestion — falls in a given year. This is a structured, authoritative
+fact rather than an inference from OCR text, matching this project's
+general principle of keeping structured facts in PostgreSQL rather than
+inferring them. `search_pages()` in
+`lexical_search.py` gained an optional `document_extraction_ids`
+parameter (defaulting to no restriction, so retrieval evaluation's
+measured baseline is provably unaffected — re-running `evaluate-retrieval`
+after this change reproduced the exact same Mean Recall@5/@10/MRR as
+before); `retrieve_evidence_node` now passes it whenever
+`generate_query_node` determined the question names exactly one fiscal
+year, restricting candidates to only that year's filing(s) before
+ranking, rather than merely nudging their rank.
+
+Measured result: re-running the FY2023 going-concern question 8 times
+against the real persisted corpus, every single run cited only pages
+from the correct FY2023 filing (`document_extraction_id=42`) — zero
+cross-year leaks, down from 2 of 8 with the query-forcing change alone
+and the roughly 1-in-3 rate originally observed. A genuine multi-year
+range question (the FY2021–FY2025 directors question) was also re-run to
+confirm this change doesn't affect it: `generate_query_node` correctly
+determined it names more than one year, so no extraction-id restriction
+was applied, and its retrieval behaviour is unchanged from before this
+fix — including its pre-existing limitation that a single `context_pages`
+retrieval pass struggles to gather evidence spanning five separate
+filings, which is a distinct, already-known gap belonging to the
+multi-step investigation milestone, not something this change was meant
+to address.
 
 This first slice is deliberately the smallest useful slice: one question
 in, one finding out, no multi-step planning or looping across
@@ -836,6 +876,7 @@ uv run ruff format .
 │   ├── embeddings_client.py            # Async client for the embeddings provider
 │   ├── extraction_persistence.py       # Idempotent page-extraction persistence
 │   ├── fiscal_year_extraction.py       # Deterministic fiscal-year extraction from question text
+│   ├── fiscal_year_lookup.py           # Filing lookup by accounting period (made_up_date)
 │   ├── hybrid_search.py                # Reciprocal Rank Fusion of lexical and vector rankings
 │   ├── ingestion.py                    # Idempotent persistence of source data
 │   ├── investigation_agent.py          # LangGraph investigation agent and citation validation
