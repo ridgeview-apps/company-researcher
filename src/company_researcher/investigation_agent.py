@@ -48,6 +48,21 @@ _FINDING_SYSTEM_PROMPT = (
     "directors, or vice versa, even where both discuss the same topic."
 )
 
+_AGGREGATE_SYSTEM_PROMPT = (
+    "You are an evidence-driven investigation assistant producing a final "
+    "answer that compares or explains a trend across multiple fiscal years. "
+    "You will be given each fiscal year's already-grounded claim, whether "
+    "its evidence was sufficient, and its available citations. Synthesize "
+    "one overall claim addressing the original question across all of the "
+    "years - explicitly note any year for which no evidence was found "
+    "rather than omitting it silently. Every citation in your response must "
+    "be copied exactly (document_extraction_id, page_number, and "
+    "supporting_text) from the citations listed below for the relevant "
+    "year - do not invent a new citation or alter any of its fields. If "
+    "none of the per-year findings provide enough evidence to support a "
+    "comparison, set evidence_sufficient to false and say so."
+)
+
 
 class InvestigationAgentError(Exception):
     """Raised when the agent produces a finding that violates its evidence contract."""
@@ -74,6 +89,25 @@ def _force_unambiguous_fiscal_year(query: str, question: str) -> str:
     if re.search(rf"\b{year}\b", query):
         return query
     return f"{query} {year}".strip()
+
+
+def _fiscal_year_range(years: Sequence[str]) -> list[str]:
+    """Expand 2+ named years into the inclusive range between the earliest and latest.
+
+    A multi-year question names only its boundary years as literal tokens
+    (e.g. "FY2021 through FY2025" yields only "2021" and "2025" from
+    `extract_fiscal_years`), but the evaluation dataset's own multi-year
+    questions expect evidence from *every* year in between, not just the
+    endpoints (q4's answer covers FY2021, FY2022, FY2023, and FY2025
+    individually). Returns an empty list for 0 or 1 named years, matching
+    `_force_unambiguous_fiscal_year`'s existing single-year/no-year
+    threshold, since those cases are already handled by the single-pass
+    retrieval path.
+    """
+    if len(years) < 2:
+        return []
+    year_ints = sorted(int(year) for year in years)
+    return [str(year) for year in range(year_ints[0], year_ints[-1] + 1)]
 
 
 class RetrievedPage(BaseModel):
@@ -104,13 +138,30 @@ class Finding(BaseModel):
     citations: list[Citation]
 
 
+class YearEvidence(BaseModel):
+    """One fiscal year's independently retrieved evidence and grounded sub-finding.
+
+    Kept separate per year so each sub-finding is synthesized from only
+    that year's own retrieved pages - the same discipline that fixed the
+    single-question cross-fiscal-year citation leak, now applied to a
+    genuinely multi-year question instead of relying on one shared,
+    mixed-year context window.
+    """
+
+    fiscal_year: str
+    retrieved_pages: list[RetrievedPage]
+    finding: Finding
+
+
 class InvestigationState(TypedDict, total=False):
     """LangGraph state threaded through the investigation graph."""
 
     question: str
     generated_query: str
     fiscal_year: str | None
+    fiscal_year_range: list[str]
     retrieved_pages: list[RetrievedPage]
+    year_evidence: list[YearEvidence]
     finding: Finding
 
 
@@ -157,6 +208,41 @@ def _validate_citations(
             )
 
 
+def _format_evidence_text(pages: Sequence[RetrievedPage], *, empty_message: str) -> str:
+    """Render retrieved pages as labelled evidence text for a synthesis prompt."""
+    if not pages:
+        return empty_message
+    return "\n\n".join(
+        f"[document_extraction_id={page.document_extraction_id} "
+        f"page_number={page.page_number}]\n{page.text}"
+        for page in pages
+    )
+
+
+def _format_year_findings_summary(year_evidence: Sequence[YearEvidence]) -> str:
+    """Render each year's already-grounded sub-finding for the aggregation prompt.
+
+    Passes only each sub-finding's claim, sufficiency, and citations - not
+    the raw page text again - since grounding already happened once per
+    year; the aggregation step is a narrative/comparison layer over facts
+    already validated, not a second pass over OCR text.
+    """
+    return "\n\n".join(
+        f"Fiscal year {evidence.fiscal_year}:\n"
+        f"  claim: {evidence.finding.claim}\n"
+        f"  evidence_sufficient: {evidence.finding.evidence_sufficient}\n"
+        f"  citations: {[citation.model_dump() for citation in evidence.finding.citations]}"
+        for evidence in year_evidence
+    )
+
+
+def _route_after_generate_query(state: InvestigationState) -> str:
+    """Send genuinely multi-year questions down the per-year gather/aggregate path."""
+    if len(state.get("fiscal_year_range", [])) >= 2:
+        return "gather_year_findings"
+    return "retrieve_evidence"
+
+
 def _build_graph(
     session: AsyncSession,
     chat_client: ChatProvider,
@@ -166,7 +252,16 @@ def _build_graph(
 ) -> CompiledStateGraph[
     InvestigationState, None, InvestigationState, InvestigationState
 ]:
-    """Assemble the linear generate_query -> retrieve_evidence -> synthesize_finding graph."""
+    """Assemble the investigation graph.
+
+    generate_query always runs first, then branches on how many fiscal
+    years the question names: 0 or 1 (the original, unchanged path) goes
+    through a single retrieve_evidence -> synthesize_finding pass; 2 or
+    more (a genuinely multi-year question) goes through a per-year
+    gather_year_findings -> aggregate_findings pass instead, so the
+    question's evidence for one fiscal year is never crowded out by
+    another's in a single shared context window.
+    """
 
     async def generate_query_node(state: InvestigationState) -> InvestigationState:
         query = await chat_client.complete(
@@ -178,7 +273,11 @@ def _build_graph(
         forced_query = _force_unambiguous_fiscal_year(query.strip(), state["question"])
         years = extract_fiscal_years(state["question"])
         fiscal_year = years[0] if len(years) == 1 else None
-        return {"generated_query": forced_query, "fiscal_year": fiscal_year}
+        return {
+            "generated_query": forced_query,
+            "fiscal_year": fiscal_year,
+            "fiscal_year_range": _fiscal_year_range(years),
+        }
 
     async def retrieve_evidence_node(state: InvestigationState) -> InvestigationState:
         fiscal_year = state.get("fiscal_year")
@@ -198,14 +297,8 @@ def _build_graph(
 
     async def synthesize_finding_node(state: InvestigationState) -> InvestigationState:
         pages = state["retrieved_pages"]
-        evidence_text = (
-            "\n\n".join(
-                f"[document_extraction_id={page.document_extraction_id} "
-                f"page_number={page.page_number}]\n{page.text}"
-                for page in pages
-            )
-            if pages
-            else "No evidence pages were retrieved for this question."
+        evidence_text = _format_evidence_text(
+            pages, empty_message="No evidence pages were retrieved for this question."
         )
         user_message = f"Question: {state['question']}\n\nAvailable evidence pages:\n\n{evidence_text}"
         finding = await chat_client.complete_structured(
@@ -218,14 +311,82 @@ def _build_graph(
         _validate_citations(finding, pages)
         return {"finding": finding}
 
+    async def gather_year_findings_node(
+        state: InvestigationState,
+    ) -> InvestigationState:
+        question = state["question"]
+        query = state["generated_query"]
+        year_evidence: list[YearEvidence] = []
+        for year in state["fiscal_year_range"]:
+            document_extraction_ids = await document_extraction_ids_for_fiscal_year(
+                session, year
+            )
+            matches = await search_pages(
+                session,
+                query,
+                limit=search_depth,
+                document_extraction_ids=document_extraction_ids,
+            )
+            pages = await _load_page_texts(session, matches[:context_pages])
+            evidence_text = _format_evidence_text(
+                pages,
+                empty_message="No evidence pages were retrieved for this fiscal year.",
+            )
+            user_message = (
+                f"Question: {question}\n\nFocus specifically on fiscal year {year}.\n\n"
+                f"Available evidence pages:\n\n{evidence_text}"
+            )
+            finding = await chat_client.complete_structured(
+                [
+                    ChatMessage(role="system", content=_FINDING_SYSTEM_PROMPT),
+                    ChatMessage(role="user", content=user_message),
+                ],
+                Finding,
+            )
+            _validate_citations(finding, pages)
+            year_evidence.append(
+                YearEvidence(fiscal_year=year, retrieved_pages=pages, finding=finding)
+            )
+        return {"year_evidence": year_evidence}
+
+    async def aggregate_findings_node(state: InvestigationState) -> InvestigationState:
+        year_evidence = state["year_evidence"]
+        summary = _format_year_findings_summary(year_evidence)
+        user_message = (
+            f"Question: {state['question']}\n\nPer-year findings:\n\n{summary}"
+        )
+        finding = await chat_client.complete_structured(
+            [
+                ChatMessage(role="system", content=_AGGREGATE_SYSTEM_PROMPT),
+                ChatMessage(role="user", content=user_message),
+            ],
+            Finding,
+        )
+        all_pages = [
+            page for evidence in year_evidence for page in evidence.retrieved_pages
+        ]
+        _validate_citations(finding, all_pages)
+        return {"finding": finding}
+
     graph = StateGraph(InvestigationState)
     graph.add_node("generate_query", generate_query_node)
     graph.add_node("retrieve_evidence", retrieve_evidence_node)
     graph.add_node("synthesize_finding", synthesize_finding_node)
+    graph.add_node("gather_year_findings", gather_year_findings_node)
+    graph.add_node("aggregate_findings", aggregate_findings_node)
     graph.add_edge(START, "generate_query")
-    graph.add_edge("generate_query", "retrieve_evidence")
+    graph.add_conditional_edges(
+        "generate_query",
+        _route_after_generate_query,
+        {
+            "retrieve_evidence": "retrieve_evidence",
+            "gather_year_findings": "gather_year_findings",
+        },
+    )
     graph.add_edge("retrieve_evidence", "synthesize_finding")
     graph.add_edge("synthesize_finding", END)
+    graph.add_edge("gather_year_findings", "aggregate_findings")
+    graph.add_edge("aggregate_findings", END)
     return graph.compile()
 
 

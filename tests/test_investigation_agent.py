@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, date, datetime
 from typing import TypeVar, cast
 
@@ -32,11 +32,25 @@ _StructuredResponse = TypeVar("_StructuredResponse", bound=BaseModel)
 
 
 class FakeChatClient:
-    """Returns a fixed query for `complete` and a fixed finding for `complete_structured`."""
+    """Returns a fixed query for `complete`.
 
-    def __init__(self, *, query: str, finding: Finding) -> None:
+    `complete_structured` returns `finding` on every call unless
+    `finding_selector` is given, in which case it picks a response by
+    inspecting each call's messages - needed for multi-year tests, where
+    `complete_structured` is called once per fiscal year plus once more to
+    aggregate, each expecting a different fake response.
+    """
+
+    def __init__(
+        self,
+        *,
+        query: str,
+        finding: Finding | None = None,
+        finding_selector: Callable[[Sequence[ChatMessage]], Finding] | None = None,
+    ) -> None:
         self._query = query
         self._finding = finding
+        self._finding_selector = finding_selector
         self.complete_calls: list[Sequence[ChatMessage]] = []
         self.complete_structured_calls: list[Sequence[ChatMessage]] = []
 
@@ -48,7 +62,33 @@ class FakeChatClient:
         self, messages: Sequence[ChatMessage], response_model: type[_StructuredResponse]
     ) -> _StructuredResponse:
         self.complete_structured_calls.append(messages)
+        if self._finding_selector is not None:
+            return cast(_StructuredResponse, self._finding_selector(messages))
+        assert self._finding is not None
         return cast(_StructuredResponse, self._finding)
+
+
+def _finding_selector_by_year(
+    per_year: dict[str, Finding], aggregate: Finding
+) -> Callable[[Sequence[ChatMessage]], Finding]:
+    """Route each `complete_structured` call to its matching fake response.
+
+    Per-year calls are identified by the "Focus specifically on fiscal
+    year {year}" marker `gather_year_findings_node` puts in its user
+    message; the final aggregation call is identified by its own distinct
+    "Per-year findings:" marker.
+    """
+
+    def selector(messages: Sequence[ChatMessage]) -> Finding:
+        content = messages[-1].content
+        if "Per-year findings:" in content:
+            return aggregate
+        for year, finding in per_year.items():
+            if f"fiscal year {year}" in content:
+                return finding
+        raise AssertionError(f"No fake finding configured for prompt: {content!r}")
+
+    return selector
 
 
 def test_force_unambiguous_fiscal_year_appends_a_missing_single_year() -> None:
@@ -411,3 +451,304 @@ async def test_investigate_excludes_a_different_fiscal_years_filing_entirely(
     )
 
     assert finding == correct_finding
+
+
+@pytest.mark.asyncio
+async def test_investigate_decomposes_a_multi_year_question_into_one_pass_per_year(
+    session: AsyncSession, company: Company
+) -> None:
+    """A question naming 2+ years must gather evidence with one isolated pass per year, not one shared context window (see README's multi-step milestone).
+
+    The same generated query matches every year's page (all three share the
+    "cobalt zenith mosaic tundra" terms), but each year's retrieval is
+    restricted to only that year's own filing, so the per-year prompts must
+    each contain only their own year's figure, never another year's.
+    """
+    extraction_2021 = await _create_filing_with_pages(
+        session,
+        "investigation-multi-year-2021",
+        ["Cobalt zenith mosaic tundra figure was 100 for 2021."],
+        made_up_date="2021-07-31",
+    )
+    extraction_2022 = await _create_filing_with_pages(
+        session,
+        "investigation-multi-year-2022",
+        ["Cobalt zenith mosaic tundra figure was 200 for 2022."],
+        made_up_date="2022-07-31",
+    )
+    extraction_2023 = await _create_filing_with_pages(
+        session,
+        "investigation-multi-year-2023",
+        ["Cobalt zenith mosaic tundra figure was 300 for 2023."],
+        made_up_date="2023-07-31",
+    )
+
+    citation_2021 = Citation(
+        document_extraction_id=extraction_2021.id,
+        page_number=1,
+        supporting_text="figure was 100",
+    )
+    citation_2022 = Citation(
+        document_extraction_id=extraction_2022.id,
+        page_number=1,
+        supporting_text="figure was 200",
+    )
+    citation_2023 = Citation(
+        document_extraction_id=extraction_2023.id,
+        page_number=1,
+        supporting_text="figure was 300",
+    )
+    finding_2021 = Finding(
+        claim="Cobalt zenith mosaic tundra figure was 100 in 2021.",
+        evidence_sufficient=True,
+        citations=[citation_2021],
+    )
+    finding_2022 = Finding(
+        claim="Cobalt zenith mosaic tundra figure was 200 in 2022.",
+        evidence_sufficient=True,
+        citations=[citation_2022],
+    )
+    finding_2023 = Finding(
+        claim="Cobalt zenith mosaic tundra figure was 300 in 2023.",
+        evidence_sufficient=True,
+        citations=[citation_2023],
+    )
+    aggregate_finding = Finding(
+        claim="Cobalt zenith mosaic tundra rose from 100 in 2021 to 300 in 2023, via 200 in 2022.",
+        evidence_sufficient=True,
+        citations=[citation_2021, citation_2022, citation_2023],
+    )
+    chat_client = FakeChatClient(
+        query="cobalt zenith mosaic tundra",
+        finding_selector=_finding_selector_by_year(
+            {"2021": finding_2021, "2022": finding_2022, "2023": finding_2023},
+            aggregate_finding,
+        ),
+    )
+
+    finding = await investigate(
+        session,
+        chat_client,
+        "How did the cobalt zenith mosaic tundra figure change from 2021 to 2023?",
+        context_pages=1,
+    )
+
+    assert finding == aggregate_finding
+    assert len(chat_client.complete_calls) == 1
+    assert len(chat_client.complete_structured_calls) == 4
+
+    prompt_2021 = chat_client.complete_structured_calls[0][-1].content
+    prompt_2022 = chat_client.complete_structured_calls[1][-1].content
+    prompt_2023 = chat_client.complete_structured_calls[2][-1].content
+    assert "was 100" in prompt_2021
+    assert "was 200" not in prompt_2021 and "was 300" not in prompt_2021
+    assert "was 200" in prompt_2022
+    assert "was 100" not in prompt_2022 and "was 300" not in prompt_2022
+    assert "was 300" in prompt_2023
+    assert "was 100" not in prompt_2023 and "was 200" not in prompt_2023
+
+    aggregate_prompt = chat_client.complete_structured_calls[3][-1].content
+    assert "Per-year findings:" in aggregate_prompt
+    assert "figure was 100 in 2021" in aggregate_prompt
+    # The aggregation prompt must reuse each year's already-grounded claim,
+    # not re-dump raw OCR page text.
+    assert (
+        "Cobalt zenith mosaic tundra figure was 100 for 2021." not in aggregate_prompt
+    )
+
+
+@pytest.mark.asyncio
+async def test_investigate_multi_year_gap_year_with_no_filing_still_gets_its_own_pass(
+    session: AsyncSession, company: Company
+) -> None:
+    """A year in the named range with no persisted filing must still get its own gather pass, reporting insufficient evidence rather than being silently skipped."""
+    extraction_2021 = await _create_filing_with_pages(
+        session,
+        "investigation-multi-year-gap-2021",
+        ["Prairie glacier quartz reading was 50 for 2021."],
+        made_up_date="2021-07-31",
+    )
+    # Deliberately no 2022 filing at all.
+    extraction_2023 = await _create_filing_with_pages(
+        session,
+        "investigation-multi-year-gap-2023",
+        ["Prairie glacier quartz reading was 70 for 2023."],
+        made_up_date="2023-07-31",
+    )
+
+    citation_2021 = Citation(
+        document_extraction_id=extraction_2021.id,
+        page_number=1,
+        supporting_text="reading was 50",
+    )
+    citation_2023 = Citation(
+        document_extraction_id=extraction_2023.id,
+        page_number=1,
+        supporting_text="reading was 70",
+    )
+    finding_2021 = Finding(
+        claim="Prairie glacier quartz reading was 50 in 2021.",
+        evidence_sufficient=True,
+        citations=[citation_2021],
+    )
+    finding_2022 = Finding(
+        claim="No evidence of a 2022 prairie glacier quartz reading was found.",
+        evidence_sufficient=False,
+        citations=[],
+    )
+    finding_2023 = Finding(
+        claim="Prairie glacier quartz reading was 70 in 2023.",
+        evidence_sufficient=True,
+        citations=[citation_2023],
+    )
+    aggregate_finding = Finding(
+        claim=(
+            "Prairie glacier quartz reading rose from 50 in 2021 to 70 in 2023; "
+            "no 2022 filing was found."
+        ),
+        evidence_sufficient=True,
+        citations=[citation_2021, citation_2023],
+    )
+    chat_client = FakeChatClient(
+        query="prairie glacier quartz",
+        finding_selector=_finding_selector_by_year(
+            {"2021": finding_2021, "2022": finding_2022, "2023": finding_2023},
+            aggregate_finding,
+        ),
+    )
+
+    finding = await investigate(
+        session,
+        chat_client,
+        "How did the prairie glacier quartz reading change from 2021 to 2023?",
+        context_pages=1,
+    )
+
+    assert finding == aggregate_finding
+    assert len(chat_client.complete_structured_calls) == 4
+    gap_year_prompt = chat_client.complete_structured_calls[1][-1].content
+    assert "No evidence pages were retrieved for this fiscal year." in gap_year_prompt
+
+
+@pytest.mark.asyncio
+async def test_investigate_multi_year_rejects_a_sub_finding_that_cites_another_years_page(
+    session: AsyncSession, company: Company
+) -> None:
+    """Each year's sub-finding must be validated against only that year's own retrieved pages, so a cross-year citation leak is still caught even inside the new multi-year path."""
+    await _create_filing_with_pages(
+        session,
+        "investigation-multi-year-leak-2021",
+        ["Marble copper vertex disclosure for 2021."],
+        made_up_date="2021-07-31",
+    )
+    extraction_2022 = await _create_filing_with_pages(
+        session,
+        "investigation-multi-year-leak-2022",
+        ["Marble copper vertex disclosure for 2022."],
+        made_up_date="2022-07-31",
+    )
+
+    leaking_finding_2021 = Finding(
+        claim="Fabricated claim citing the wrong year's page.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2022.id,
+                page_number=1,
+                supporting_text="disclosure for 2022",
+            )
+        ],
+    )
+    finding_2022 = Finding(
+        claim="Marble copper vertex disclosure for 2022.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2022.id,
+                page_number=1,
+                supporting_text="disclosure for 2022",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="marble copper vertex",
+        finding_selector=_finding_selector_by_year(
+            {"2021": leaking_finding_2021, "2022": finding_2022},
+            Finding(claim="unused", evidence_sufficient=True, citations=[]),
+        ),
+    )
+
+    with pytest.raises(InvestigationAgentError):
+        await investigate(
+            session,
+            chat_client,
+            "What did marble copper vertex disclose from 2021 to 2022?",
+            context_pages=1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_investigate_multi_year_rejects_an_aggregate_citation_not_drawn_from_any_year(
+    session: AsyncSession, company: Company
+) -> None:
+    """The final aggregation Finding's citations must come from the union of pages actually retrieved across every year's pass, not be invented fresh."""
+    extraction_2021 = await _create_filing_with_pages(
+        session,
+        "investigation-multi-year-badagg-2021",
+        ["Willow granite obsidian disclosure for 2021."],
+        made_up_date="2021-07-31",
+    )
+    extraction_2022 = await _create_filing_with_pages(
+        session,
+        "investigation-multi-year-badagg-2022",
+        ["Willow granite obsidian disclosure for 2022."],
+        made_up_date="2022-07-31",
+    )
+
+    finding_2021 = Finding(
+        claim="Willow granite obsidian disclosure for 2021.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2021.id,
+                page_number=1,
+                supporting_text="disclosure for 2021",
+            )
+        ],
+    )
+    finding_2022 = Finding(
+        claim="Willow granite obsidian disclosure for 2022.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2022.id,
+                page_number=1,
+                supporting_text="disclosure for 2022",
+            )
+        ],
+    )
+    hallucinated_aggregate = Finding(
+        claim="Fabricated comparison citing a page never retrieved in any year.",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=extraction_2021.id,
+                page_number=99,
+                supporting_text="does not exist",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="willow granite obsidian",
+        finding_selector=_finding_selector_by_year(
+            {"2021": finding_2021, "2022": finding_2022}, hallucinated_aggregate
+        ),
+    )
+
+    with pytest.raises(InvestigationAgentError):
+        await investigate(
+            session,
+            chat_client,
+            "What did willow granite obsidian disclose from 2021 to 2022?",
+            context_pages=1,
+        )

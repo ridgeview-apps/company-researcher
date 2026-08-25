@@ -802,7 +802,7 @@ filings, which is a distinct, already-known gap belonging to the
 multi-step investigation milestone, not something this change was meant
 to address.
 
-This first slice is deliberately the smallest useful slice: one question
+This first slice was deliberately the smallest useful slice: one question
 in, one finding out, no multi-step planning or looping across
 sub-questions, no human-in-the-loop review, no LLM-as-judge, and no
 persisted/checkpointed graph state. `search_pages` is also still not
@@ -810,6 +810,81 @@ scoped by company (see
 [Measure the lexical-search retrieval baseline](#measure-the-lexical-search-retrieval-baseline)) —
 with only Gymshark persisted this does not yet matter in practice, but a
 second company's filings would compete unfiltered in the same search.
+
+### Multi-year investigation questions
+
+The single-pass graph above has one structural limitation for a question
+naming several fiscal years at once (e.g. "how did turnover change from
+FY2021 through FY2025?"): `retrieve_evidence_node` runs one `search_pages`
+call and keeps only `context_pages` (default 5) pages total, so evidence
+for a question spanning 4–5 filings has to compete for those same 5 slots
+— one filing's pages can crowd out another's entirely.
+
+`investigation_agent.py` now branches on how many fiscal years a question
+names. `generate_query_node` still runs first and computes, deterministically
+from `extract_fiscal_years()`, either a single `fiscal_year` (unchanged,
+existing behaviour) or — when 2 or more years are named — an inclusive
+`fiscal_year_range` spanning the earliest to the latest named year. This
+range-filling matters: `extract_fiscal_years("FY2021 through FY2025")`
+returns only the literal boundary tokens `["2021", "2025"]`, but the
+evaluation dataset's own q4 ("directors from FY2021 to FY2025") needs
+evidence from every year in between too, not just the endpoints — checked
+against the dataset's own answer key before building this, not assumed.
+
+A question naming 0 or 1 years still goes through the original, completely
+unchanged `retrieve_evidence → synthesize_finding` pass. A question naming
+2+ years instead goes through two new nodes:
+
+- **`gather_year_findings`** — sequentially, for each year in
+  `fiscal_year_range`: looks up that year's filings with
+  `document_extraction_ids_for_fiscal_year` (a year with no filing, e.g.
+  Gymshark's FY2024, simply gets an empty restriction rather than being
+  skipped), runs `search_pages` restricted to that year alone with its own
+  `context_pages` budget (not shared across years — the actual fix for the
+  crowding problem above), and makes one `complete_structured(Finding)` call
+  scoped to only that year's evidence and reusing the same
+  voice-distinguishing system prompt as the single-year path. Every sub-
+  finding's citations are validated with the existing `_validate_citations`
+  against only that year's own retrieved pages — the same discipline that
+  fixed the single-question cross-fiscal-year citation leak, now applied
+  per year instead of relying on one shared, mixed-year context window. A
+  year with zero retrieved pages (the FY2024 gap case) still goes through
+  this same path and naturally produces `evidence_sufficient=False`, so the
+  gap is reported rather than silently dropped.
+- **`aggregate_findings`** — one final `complete_structured(Finding)` call
+  given each year's already-grounded claim, sufficiency flag, and citations
+  (not the raw OCR page text again — grounding already happened once per
+  year, so this step is a narrative/comparison layer over already-validated
+  facts, not a second pass over page text). Its system prompt instructs it
+  to copy citations exactly from what it was given rather than invent new
+  ones, and its citations are validated with the same `_validate_citations`
+  against the union of every year's retrieved pages.
+
+`investigate()`'s return type is unchanged — still a single `Finding` (the
+aggregate, for a multi-year question) — so the CLI's output contract does
+not change in this slice; the per-year `YearEvidence` breakdown exists only
+as internal graph state, inspectable in tests but not currently surfaced by
+`company-researcher investigate`.
+
+This was tested with four new unit tests in `test_investigation_agent.py`
+against the real local Postgres instance (a fake chat client, since no
+real LLM call is involved in proving the graph's routing, retrieval
+scoping, or citation-validation logic): decomposition into one isolated
+pass per year, a year with no filing still getting its own pass, a
+per-year citation validated against only that year's own pages, and a
+fabricated aggregate citation being rejected. **It has not yet been run
+against a real LLM or the persisted Gymshark corpus** the way the
+single-year fiscal-year fix was (see the measured 8-run results above) —
+that real-corpus verification is the natural next step before this is
+considered as solidly evidenced as the single-year path.
+
+A known, deliberately accepted gap: FY2024 has no filing of its own in the
+persisted corpus — its only figure lives as a comparative column inside
+the FY2025 filing's page. Because retrieval is restricted per-year by
+`made_up_date`, an FY2024 sub-pass will correctly find nothing even though
+a number for it technically exists elsewhere in the corpus. Extracting
+comparative-column data from an adjacent year's filing is a distinct,
+unaddressed problem, not something this milestone attempted.
 
 ## Quality checks
 

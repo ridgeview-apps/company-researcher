@@ -209,7 +209,7 @@ limitation gathering evidence spread across five filings in one
 investigation milestone, not this fix. See README.md's "Run the
 investigation agent" section for the full detail.
 
-This first slice remains deliberately narrow: one natural-language question
+This first slice was deliberately narrow: one natural-language question
 in, one structured `Finding` out, no multi-step planning/looping, no HITL,
 no LLM-judge, and no persisted/checkpointed graph state. `search_pages` is
 also still not scoped by company (a pre-existing limitation, now directly
@@ -217,17 +217,58 @@ relevant here too, not just to retrieval evaluation) — with only Gymshark
 persisted this does not yet matter in practice, but a second company's
 filings would compete in the same lexical search unfiltered.
 
+The multi-step investigation milestone (handling a question that names
+several fiscal years at once, e.g. a turnover or directors comparison
+across FY2021–FY2025) is now built. `generate_query_node` computes,
+deterministically from `extract_fiscal_years()`, an inclusive
+`fiscal_year_range` whenever a question names 2+ years — filling the range
+between the earliest and latest named year, not just those literal
+endpoint tokens, because `extract_fiscal_years("FY2021 through FY2025")`
+only returns `["2021", "2025"]`, while the evaluation dataset's own q4
+needs evidence from every intervening year too (checked against the
+dataset's answer key before building this). A question naming 0 or 1 years
+still goes through the original, byte-for-byte unchanged
+`retrieve_evidence → synthesize_finding` pass. A question naming 2+ years
+instead goes through two new nodes: `gather_year_findings`, which runs one
+isolated `search_pages` + `complete_structured(Finding)` pass per year
+(each with its own `context_pages` budget, restricted to only that year's
+filings, and its citations validated with the existing
+`_validate_citations` against only that year's own retrieved pages — the
+same discipline that fixed the single-question cross-fiscal-year leak, now
+applied per year instead of relying on one shared, mixed-year context
+window), and `aggregate_findings`, which makes one final
+`complete_structured(Finding)` call over each year's already-grounded claim
+(not raw OCR text again) and validates its citations against the union of
+every year's retrieved pages. `investigate()`'s return type is unchanged —
+still a single `Finding` — so per-year `YearEvidence` stays internal graph
+state, not part of the CLI/JSON contract; this was an explicit, agreed
+product decision, not an oversight. A year with no filing (e.g. Gymshark's
+FY2024, whose only figure lives as a comparative column inside the FY2025
+filing) still gets its own pass and reports `evidence_sufficient=False`
+rather than being silently skipped — extracting that comparative-column
+data is a distinct, unaddressed gap. This was verified with four new unit
+tests against real Postgres (a fake chat client, since none of what they
+prove — graph routing, retrieval scoping, cross-sub-result citation
+validation — requires a real LLM call); it has **not** yet been run
+against a real LLM or the persisted Gymshark corpus the way the
+single-year fiscal-year fix was, and that real-corpus verification is the
+natural next step before this is as solidly evidenced as the single-year
+path. See README.md's "Multi-year investigation questions" section for
+the full detail.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or
 code was added.
 
-Do not add HITL, LLM judges, reranking, advanced RAG, multi-step
-planning/looping, vector/hybrid retrieval in the agent, or hard-coded
-historical as-of behavior until the relevant project phase and until
-deliberately agreed as the next milestone. Keep evaluation work limited to
-the small dataset and deterministic retrieval metrics needed for the
-baseline.
+Do not add HITL, LLM judges, reranking, advanced RAG, vector/hybrid
+retrieval in the agent, or hard-coded historical as-of behavior until the
+relevant project phase and until deliberately agreed as the next
+milestone. Multi-step planning/looping in the agent is no longer gated —
+it was the explicitly agreed milestone above — but further extensions to
+it should still be deliberately agreed first, the same as any other
+milestone. Keep evaluation work limited to the small dataset and
+deterministic retrieval metrics needed for the baseline.
 
 ## Engineering conventions
 
