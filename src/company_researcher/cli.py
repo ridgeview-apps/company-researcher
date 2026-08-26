@@ -3,6 +3,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
 from sqlalchemy import select
@@ -205,6 +206,19 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Companies House company number to scope retrieval to "
             f"(default: {DEFAULT_INVESTIGATION_COMPANY_NUMBER}, Gymshark Ltd)."
+        ),
+    )
+    investigation_parser.add_argument(
+        "--as-of-date",
+        type=date.fromisoformat,
+        default=None,
+        help=(
+            "Restrict retrieval to filings publicly registered with "
+            "Companies House on or before this date (YYYY-MM-DD). Filters "
+            "on each filing's own registration date, not its accounting "
+            "period - a filing dated after this cutoff is excluded from "
+            "evidence entirely, never merely deprioritized. Omit for no "
+            "restriction (default)."
         ),
     )
 
@@ -526,7 +540,9 @@ def run_retrieval_evaluation(
     )
 
 
-async def investigate_command(question: str, company_number: str) -> str:
+async def investigate_command(
+    question: str, company_number: str, as_of_date: date | None
+) -> str:
     """Run the investigation agent for one question and serialize its finding.
 
     A finding whose claim is an interpretation, or whose evidence is
@@ -542,7 +558,11 @@ async def investigate_command(question: str, company_number: str) -> str:
         async with session_factory() as session:
             async with ChatClient.from_settings(settings) as chat_client:
                 finding, review_id = await investigate_with_review(
-                    session, chat_client, question, company_number
+                    session,
+                    chat_client,
+                    question,
+                    company_number,
+                    as_of_date=as_of_date,
                 )
     finally:
         await engine.dispose()
@@ -556,6 +576,8 @@ async def investigate_command(question: str, company_number: str) -> str:
         "evidence_sufficient": finding.evidence_sufficient,
         "citations": [citation.model_dump() for citation in finding.citations],
     }
+    if as_of_date is not None:
+        payload["as_of_date"] = as_of_date.isoformat()
     if review_id is not None:
         payload["review_id"] = review_id
         payload["review_reason"] = review_reason(
@@ -565,9 +587,11 @@ async def investigate_command(question: str, company_number: str) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
-def run_investigation(question: str, company_number: str) -> str:
+def run_investigation(
+    question: str, company_number: str, as_of_date: date | None
+) -> str:
     """Run one investigation from the synchronous CLI."""
-    return asyncio.run(investigate_command(question, company_number))
+    return asyncio.run(investigate_command(question, company_number, as_of_date))
 
 
 _REVIEW_DECISIONS: dict[str, ReviewDecision] = {
@@ -782,7 +806,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "ingest":
             output = run_ingestion(args.company_number)
         elif args.command == "investigate":
-            output = run_investigation(args.question, args.company_number)
+            output = run_investigation(
+                args.question, args.company_number, args.as_of_date
+            )
         elif args.command == "review":
             output = run_review(
                 args.review_id,

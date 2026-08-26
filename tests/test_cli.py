@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -266,7 +267,9 @@ def test_main_prints_investigation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
-        cli, "run_investigation", lambda question, company_number: '{"ok": true}'
+        cli,
+        "run_investigation",
+        lambda question, company_number, as_of_date: '{"ok": true}',
     )
 
     exit_code = cli.main(["investigate", "What happened?"])
@@ -326,7 +329,7 @@ async def test_investigate_command_reports_a_final_finding(
     )
 
     output = await cli.investigate_command(
-        "What is the going-concern position?", "08130873"
+        "What is the going-concern position?", "08130873", None
     )
 
     assert json.loads(output) == {
@@ -341,9 +344,44 @@ async def test_investigate_command_reports_a_final_finding(
         ],
     }
     run_agent.assert_awaited_once_with(
-        session, chat_client, "What is the going-concern position?", "08130873"
+        session,
+        chat_client,
+        "What is the going-concern position?",
+        "08130873",
+        as_of_date=None,
     )
     engine.dispose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_investigate_command_reports_as_of_date_when_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = Finding(
+        claim="Evidence supports the conclusion.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[],
+    )
+    run_agent = AsyncMock(return_value=(finding, None))
+    session, chat_client, _engine = _patch_investigate_dependencies(
+        monkeypatch, run_agent
+    )
+    cutoff = date(2023, 9, 1)
+
+    output = await cli.investigate_command(
+        "What is the going-concern position?", "08130873", cutoff
+    )
+
+    payload = json.loads(output)
+    assert payload["as_of_date"] == "2023-09-01"
+    run_agent.assert_awaited_once_with(
+        session,
+        chat_client,
+        "What is the going-concern position?",
+        "08130873",
+        as_of_date=cutoff,
+    )
 
 
 @pytest.mark.asyncio
@@ -359,7 +397,7 @@ async def test_investigate_command_reports_a_pending_review(
     run_agent = AsyncMock(return_value=(finding, 42))
     _patch_investigate_dependencies(monkeypatch, run_agent)
 
-    output = await cli.investigate_command("Is governance stable?", "08130873")
+    output = await cli.investigate_command("Is governance stable?", "08130873", None)
 
     payload = json.loads(output)
     assert payload["status"] == "pending_review"

@@ -709,6 +709,57 @@ live re-integration - that would need a larger, harder-negative-weighted
 calibration set and a further prompt-design iteration measured the same
 way, not a decision made from a 14-example first pass.
 
+A point-in-time ("as-of") retrieval milestone is now built and verified
+against the real LLM and the persisted Gymshark corpus, the explicitly
+agreed next step after the LLM-judge calibration slice above. This is a
+distinct concept from the fiscal-year scoping built earlier, confirmed
+against the schema before building rather than assumed: fiscal-year
+scoping (`document_extraction_ids_for_fiscal_year`) restricts by a
+filing's accounting period (`made_up_date`), while as-of restricts by the
+date a filing actually became part of the public record -- already
+persisted verbatim as `Filing.date` (Companies House's own filing-history
+`date` field), needing no new migration.
+
+Proving this did not need a third company ingested. Gymshark's own corpus
+already contains a genuine real-world natural experiment: its original
+FY2022 accounts (extraction 43) were registered 2023-04-22, and its
+amended FY2022 accounts (extraction 44) were registered 2023-11-23 -- the
+same near-duplicate pair already implicated in the earlier fiscal-year
+cross-leak bug, now useful again for a different reason. `search_pages()`
+gained a third optional restriction, `as_of_date` (a join-based
+`Filing.date <= as_of_date` filter reusing the existing `company_number`
+join), composing by AND with the existing restrictions and defaulting to
+no-op like the others; re-running `evaluate-retrieval` reproduced the
+exact same measured baseline. Unlike the fiscal-year restriction, which
+falls back to unrestricted search when it resolves to zero filings (an
+ambiguous emptiness), `as_of_date` deliberately never falls back -- a
+cutoff that excludes everything is a meaningful, correct answer, and
+falling back would defeat the reason this restriction exists. `investigate()`,
+`investigate_with_review()`, and `investigate_with_usage()` gained an
+optional `as_of_date` keyword argument, threaded through both
+`retrieve_evidence_node` and `gather_year_findings_node` exactly like
+`company_number`. The CLI's `investigate` command gained `--as-of-date
+YYYY-MM-DD`, deliberately a strict ISO date flag rather than a
+natural-language date parsed from the question text (unlike
+`extract_fiscal_years()`'s year parsing) -- English date formats are
+genuinely ambiguous in a way four-digit years are not, and a mis-parsed
+cutoff on a constraint whose whole purpose is preventing future-information
+leakage would be a far worse failure than a wrong search keyword; this was
+raised as an explicit open question and agreed before implementation.
+
+Verified for real, not just in unit tests: running the FY2022 going-concern
+question with `--as-of-date 2023-09-01` returned a finding citing only
+extraction 43, and directly comparing `search_pages`'s ranking for the same
+query with and without the cutoff confirmed extraction 44 (rank 2
+unrestricted) is entirely absent when restricted, not merely deprioritized.
+The existing default FY2023 going-concern question and `evaluate-retrieval`
+were both re-run and confirmed unaffected. Ingesting Made.com Design Ltd --
+the project brief's other suggested point-in-time case -- remains
+deliberately out of scope for this slice: the mechanism needed proving
+against a real, already-persisted case first, which the Gymshark pair
+above already provided; whether Made.com's fuller historical-failure
+narrative is worth a dedicated later slice is a separate, open decision.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or

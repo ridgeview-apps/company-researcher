@@ -63,10 +63,11 @@ can:
 - measure how well an LLM judge for citation entailment agrees with human
   labels on a small hand-built calibration set, offline from the live
   investigation pipeline (see
-  [Calibrating an LLM judge](#calibrating-an-llm-judge) below).
-
-Temporal analysis remains deliberately deferred until the relevant project
-phase.
+  [Calibrating an LLM judge](#calibrating-an-llm-judge) below); and
+- restrict an investigation to only the filings that were actually publicly
+  registered with Companies House on or before a given date, so an as-of
+  question cannot see or cite a later, future filing (see
+  [Point-in-time (as-of) retrieval](#point-in-time-as-of-retrieval) below).
 
 ## Prerequisites
 
@@ -1841,6 +1842,129 @@ weighted calibration set and a further prompt-design iteration measured
 the same way this one was, not a decision made from 14 examples alone.
 That further iteration is deliberately left as separate, unstarted work
 rather than squeezed into this slice.
+
+## Point-in-time (as-of) retrieval
+
+The investigation agent can restrict itself to only the filings that were
+actually part of the public record on or before a given date, so a
+point-in-time question ("assess Company X using only information publicly
+available on 31 December 2022") cannot see, retrieve, or cite a filing that
+did not yet exist as of that date. This is deliberately a different concept
+from the fiscal-year scoping built earlier
+(`document_extraction_ids_for_fiscal_year`, which restricts by a filing's
+*accounting period* -- Companies House's `made_up_date`): a filing's
+accounting period end and the date it was actually registered and made
+public are different facts, confirmed directly against the schema before
+building this rather than assumed. Companies House's filing-history `date`
+field -- already persisted verbatim as `Filing.date`, no new migration
+needed -- is the date the filing was registered and became part of the
+public record, which is the correct field for "publicly available as of X."
+
+### The real natural experiment this corpus already contains
+
+Building this did not need a third company ingested. Gymshark's own
+persisted corpus already contains a genuine, real-world hindsight-leakage
+case -- the same original/amended FY2022 accounts pair already implicated
+in the earlier fiscal-year cross-leak bug (see
+[Fixing the fiscal-year-disambiguation leak](#fixing-the-fiscal-year-disambiguation-leak)
+above) -- confirmed directly against the database, not assumed:
+
+| Filing | Transaction | Accounting period (`made_up_date`) | Registered (`Filing.date`) | `document_extraction_id` |
+| --- | --- | --- | --- | --- |
+| Original FY2022 accounts (`AA`) | `MzM3NjY2NTQ5OGFkaXF6a2N4` | 2022-07-31 | 2023-04-22 | 43 |
+| Amended FY2022 accounts (`AAMD`) | `MzQwMTE2OTc4MmFkaXF6a2N4` | 2022-07-31 | 2023-11-23 | 44 |
+
+Both report the same accounting period, so fiscal-year scoping alone cannot
+tell them apart -- that is exactly why the earlier cross-leak bug happened.
+But they were registered with Companies House about seven months apart in
+the real world. An analyst asking about Gymshark's FY2022 position as of,
+say, 1 September 2023 could not possibly have seen the amendment -- it did
+not exist yet -- even though both filings are sitting in the same database
+today.
+
+### Implementation
+
+`search_pages()` (`lexical_search.py`) gained a third optional restriction,
+`as_of_date`, joining `DocumentPage -> DocumentExtraction -> FilingDocument
+-> Filing` (reusing the same join already added for `company_number`) and
+filtering `Filing.date <= as_of_date`. It composes by AND with the existing
+`document_extraction_ids` (fiscal-year) and `company_number` restrictions,
+since all three are independent parameters on the same call -- so a single
+query can ask for "this company's FY2022 filings, as they existed on 1
+September 2023" at once. All three restrictions still default to no
+restriction, so every existing call site (`retrieval_evaluation.py` among
+them) is unaffected; re-running `evaluate-retrieval` after this change
+reproduced the exact same measured baseline (Mean Recall@5/@10/MRR =
+0.625/0.833/0.468).
+
+One rule was deliberately made stricter than the existing fiscal-year
+restriction, not copied from it. The fiscal-year restriction falls back to
+"no restriction" when it resolves to zero filings, because that emptiness
+is ambiguous (a genuine reporting gap, or a named year that wasn't really a
+fiscal year at all -- see the Nothing Technology "December 2024" case
+below in [Scoping retrieval to one company](#scoping-retrieval-to-one-company)).
+`as_of_date` never falls back: a cutoff that excludes every candidate
+filing is a meaningful, correct answer -- nothing existed yet -- not an
+ambiguous edge case, and silently widening the search in that situation
+would defeat the entire reason this restriction exists. A too-early cutoff
+therefore surfaces as `evidence_sufficient=false`, the same way a genuine
+retrieval miss already does, rather than quietly falling back to searching
+every filing regardless of date.
+
+`InvestigationState` gained `as_of_date: date | None`, threaded through
+both `retrieve_evidence_node` and `gather_year_findings_node` exactly the
+way `company_number` already is. `investigate()`, `investigate_with_review()`,
+and `investigate_with_usage()` all gained an optional `as_of_date: date |
+None = None` keyword argument -- optional and no-op by default, like the
+fiscal-year restriction, not required like `company_number`, since most
+investigations have no point-in-time cutoff.
+
+The CLI's `investigate` command gained `--as-of-date YYYY-MM-DD`, parsed
+strictly with `date.fromisoformat` -- deliberately *not* a natural-language
+date parsed out of the question text the way `extract_fiscal_years()`
+already parses years. English date formats are genuinely ambiguous in a way
+four-digit fiscal years are not, and a mis-parsed cutoff on a constraint
+whose entire purpose is guaranteeing no future-information leakage would be
+a much worse failure than a wrong keyword in a search query. Output JSON
+gains an `as_of_date` field when the flag is given; omitting it leaves the
+zero-argument CLI invocation unchanged.
+
+### Verified against the real corpus, not just in tests
+
+New unit tests (`test_lexical_search.py`, `test_investigation_agent.py`,
+`test_cli.py`) against real Postgres cover the exclusion itself, the
+inclusive boundary (a filing registered exactly on the cutoff date is
+included), the AND-composition with the fiscal-year restriction, and the
+no-fallback rule. Then, run for real against the real LLM and the Gymshark
+corpus, using the natural experiment above:
+
+```bash
+uv run company-researcher investigate "What did Gymshark's FY2022 accounts state about going concern, and was there an amendment to those accounts?" --company-number 08130873 --as-of-date 2023-09-01
+```
+
+Returned a `"final"` finding citing only `document_extraction_id=43` (the
+original FY2022 accounts) -- the amendment, registered 2023-11-23, is
+structurally unreachable, not merely unranked. Directly comparing the
+underlying `search_pages` ranking for the same query with and without the
+cutoff confirms why: unrestricted, extraction 44 (the amendment) ranks 2nd
+by `ts_rank`; restricted to `as_of_date=2023-09-01`, it is absent from the
+results entirely, while extraction 43 and Gymshark's unrelated FY2023
+filing (extraction 45) remain reachable -- a genuine exclusion, not a
+coincidence of this particular question's phrasing. A default,
+no-`--as-of-date` run of the project's existing canonical FY2023
+going-concern question was re-run and confirmed unaffected, still citing
+`document_extraction_id=42` as before, and `evaluate-retrieval` was
+re-confirmed unaffected (see above) -- both regression checks this
+project's own conventions call for whenever an existing default path could
+plausibly have been touched.
+
+Ingesting Made.com Design Ltd -- the project brief's other suggested
+point-in-time case ("what could an analyst reasonably have known as of 31
+December 2021") -- remains deliberately out of scope for this slice: the
+mechanism itself needed proving against a real, already-persisted case
+first, which the Gymshark original/amended pair above already provided.
+Whether Made.com's fuller historical-failure narrative is worth a
+dedicated later slice is a separate, open decision, not assumed here.
 
 ## Quality checks
 

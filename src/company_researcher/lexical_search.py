@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import Text, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,7 @@ async def search_pages(
     limit: int,
     document_extraction_ids: Sequence[int] | None = None,
     company_number: str | None = None,
+    as_of_date: date | None = None,
 ) -> list[PageMatch]:
     """Rank document pages by PostgreSQL full-text search relevance to `query`.
 
@@ -39,11 +41,19 @@ async def search_pages(
 
     `document_extraction_ids`, when given, restricts candidates to those
     extractions before ranking -- e.g. scoping to filings for one fiscal
-    year. `company_number`, when given, restricts candidates to pages
-    belonging to that company's filings, joining
-    DocumentPage -> DocumentExtraction -> FilingDocument -> Filing to reach
-    `Filing.company_number`. Both default to no restriction, so a caller
-    that omits them is unaffected.
+    year. `company_number` and `as_of_date`, when given, restrict candidates
+    to pages belonging to that company's filings and/or to filings whose
+    Companies House `date` (the date the filing was registered and became
+    part of the public record -- distinct from `made_up_date`, a filing's
+    accounting period end, used elsewhere for fiscal-year scoping) is on or
+    before `as_of_date`, joining DocumentPage -> DocumentExtraction ->
+    FilingDocument -> Filing to reach `Filing.company_number`/`Filing.date`.
+    `as_of_date` never falls back to "no restriction" when it excludes every
+    candidate: unlike the fiscal-year restriction (whose emptiness is
+    ambiguous), a cutoff that finds nothing is a meaningful, correct answer
+    here -- silently widening the search would defeat the reason this
+    restriction exists. All three restrictions default to no restriction, so
+    a caller that omits them is unaffected.
 
     Ties in `rank` are broken by `document_extraction_id` then
     `page_number` so ranking is fully deterministic regardless of query
@@ -67,7 +77,7 @@ async def search_pages(
         statement = statement.where(
             DocumentPage.document_extraction_id.in_(document_extraction_ids)
         )
-    if company_number is not None:
+    if company_number is not None or as_of_date is not None:
         statement = (
             statement.join(
                 DocumentExtraction,
@@ -78,8 +88,11 @@ async def search_pages(
                 FilingDocument.id == DocumentExtraction.filing_document_id,
             )
             .join(Filing, Filing.id == FilingDocument.filing_id)
-            .where(Filing.company_number == company_number)
         )
+        if company_number is not None:
+            statement = statement.where(Filing.company_number == company_number)
+        if as_of_date is not None:
+            statement = statement.where(Filing.date <= as_of_date)
     statement = statement.order_by(
         rank.desc(), DocumentPage.document_extraction_id, DocumentPage.page_number
     ).limit(limit)

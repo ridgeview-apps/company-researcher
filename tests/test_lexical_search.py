@@ -47,6 +47,7 @@ async def _create_pages(
     *,
     transaction_id: str = "lexical-search-transaction",
     company_number: str = TEST_COMPANY_NUMBER,
+    filing_date: date = date(2026, 1, 1),
 ) -> DocumentExtraction:
     now = datetime.now(UTC)
     company_statement = select(Company).where(Company.company_number == company_number)
@@ -67,7 +68,7 @@ async def _create_pages(
         category="accounts",
         type="AA",
         description="accounts",
-        date=date(2026, 1, 1),
+        date=filing_date,
         raw_filing={},
         retrieved_at=now,
     )
@@ -235,3 +236,106 @@ async def test_search_pages_restricts_to_given_company_number(
 
     assert allowed.id in matched_extraction_ids
     assert excluded.id not in matched_extraction_ids
+
+
+@pytest.mark.asyncio
+async def test_search_pages_restricts_to_filings_on_or_before_as_of_date(
+    session: AsyncSession,
+) -> None:
+    before_cutoff = await _create_pages(
+        session,
+        ["Zephyrion turnover figure from the original filing."],
+        transaction_id="lexical-search-as-of-before",
+        filing_date=date(2023, 4, 22),
+    )
+    after_cutoff = await _create_pages(
+        session,
+        ["Zephyrion turnover figure from the amended filing."],
+        transaction_id="lexical-search-as-of-after",
+        filing_date=date(2023, 11, 23),
+    )
+
+    matches = await search_pages(
+        session, "zephyrion turnover", limit=500, as_of_date=date(2023, 9, 1)
+    )
+    matched_extraction_ids = {m.document_extraction_id for m in matches}
+
+    assert before_cutoff.id in matched_extraction_ids
+    assert after_cutoff.id not in matched_extraction_ids
+
+
+@pytest.mark.asyncio
+async def test_search_pages_as_of_date_on_the_filing_date_itself_is_included(
+    session: AsyncSession,
+) -> None:
+    extraction = await _create_pages(
+        session,
+        ["Zephyrion turnover figure filed exactly on the cutoff date."],
+        transaction_id="lexical-search-as-of-exact",
+        filing_date=date(2023, 4, 22),
+    )
+
+    matches = await search_pages(
+        session, "zephyrion turnover", limit=500, as_of_date=date(2023, 4, 22)
+    )
+    matched_extraction_ids = {m.document_extraction_id for m in matches}
+
+    assert extraction.id in matched_extraction_ids
+
+
+@pytest.mark.asyncio
+async def test_search_pages_as_of_date_returns_nothing_rather_than_falling_back(
+    session: AsyncSession,
+) -> None:
+    await _create_pages(
+        session,
+        ["Zephyrion turnover figure from a filing after the cutoff."],
+        transaction_id="lexical-search-as-of-none-qualify",
+        filing_date=date(2023, 4, 22),
+    )
+
+    matches = await search_pages(
+        session, "zephyrion turnover", limit=500, as_of_date=date(2020, 1, 1)
+    )
+
+    assert matches == []
+
+
+@pytest.mark.asyncio
+async def test_search_pages_composes_as_of_date_with_document_extraction_ids(
+    session: AsyncSession,
+) -> None:
+    fiscal_year_match_before_cutoff = await _create_pages(
+        session,
+        ["Zephyrion turnover figure, same fiscal year, filed before the cutoff."],
+        transaction_id="lexical-search-compose-before",
+        filing_date=date(2023, 4, 22),
+    )
+    fiscal_year_match_after_cutoff = await _create_pages(
+        session,
+        ["Zephyrion turnover figure, same fiscal year, filed after the cutoff."],
+        transaction_id="lexical-search-compose-after",
+        filing_date=date(2023, 11, 23),
+    )
+    other_fiscal_year_before_cutoff = await _create_pages(
+        session,
+        ["Zephyrion turnover figure, different fiscal year, filed before the cutoff."],
+        transaction_id="lexical-search-compose-other-year",
+        filing_date=date(2023, 1, 1),
+    )
+
+    matches = await search_pages(
+        session,
+        "zephyrion turnover",
+        limit=500,
+        document_extraction_ids=[
+            fiscal_year_match_before_cutoff.id,
+            fiscal_year_match_after_cutoff.id,
+        ],
+        as_of_date=date(2023, 9, 1),
+    )
+    matched_extraction_ids = {m.document_extraction_id for m in matches}
+
+    assert matched_extraction_ids == {fiscal_year_match_before_cutoff.id}
+    assert fiscal_year_match_after_cutoff.id not in matched_extraction_ids
+    assert other_fiscal_year_before_cutoff.id not in matched_extraction_ids

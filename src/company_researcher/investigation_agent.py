@@ -1,5 +1,6 @@
 import re
 from collections.abc import Sequence
+from datetime import date
 from typing import Literal, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
@@ -176,6 +177,7 @@ class InvestigationState(TypedDict, total=False):
 
     question: str
     company_number: str
+    as_of_date: date | None
     generated_query: str
     fiscal_year: str | None
     fiscal_year_range: list[str]
@@ -496,6 +498,7 @@ def _build_graph(
             limit=search_depth,
             document_extraction_ids=document_extraction_ids,
             company_number=state["company_number"],
+            as_of_date=state.get("as_of_date"),
         )
         pages = await _load_page_texts(session, matches[:context_pages])
         return {"retrieved_pages": pages}
@@ -531,6 +534,7 @@ def _build_graph(
                 limit=search_depth,
                 document_extraction_ids=document_extraction_ids,
                 company_number=state["company_number"],
+                as_of_date=state.get("as_of_date"),
             )
             pages = await _load_page_texts(session, matches[:context_pages])
             evidence_text = _format_evidence_text(
@@ -621,6 +625,7 @@ async def _run_graph(
     *,
     search_depth: int,
     context_pages: int,
+    as_of_date: date | None,
 ) -> InvestigationState:
     """Build and run the investigation graph, returning its final state.
 
@@ -633,7 +638,13 @@ async def _run_graph(
     )
     return cast(
         InvestigationState,
-        await graph.ainvoke({"question": question, "company_number": company_number}),
+        await graph.ainvoke(
+            {
+                "question": question,
+                "company_number": company_number,
+                "as_of_date": as_of_date,
+            }
+        ),
     )
 
 
@@ -645,6 +656,7 @@ async def investigate(
     *,
     search_depth: int = DEFAULT_SEARCH_DEPTH,
     context_pages: int = DEFAULT_CONTEXT_PAGES,
+    as_of_date: date | None = None,
 ) -> Finding:
     """Run the investigation graph for one natural-language question.
 
@@ -659,7 +671,11 @@ async def investigate(
     restriction: unlike a fiscal year, which a question may or may not
     name, an investigation is always about exactly one company, so every
     call site must be explicit about which one rather than silently
-    searching across every persisted company's filings.
+    searching across every persisted company's filings. `as_of_date` is
+    optional and defaults to no restriction, like the fiscal-year
+    restriction, since most investigations have no point-in-time cutoff;
+    when given, it restricts every retrieval pass to filings that were
+    already publicly filed on or before that date (see `search_pages`).
     """
     result = await _run_graph(
         session,
@@ -668,6 +684,7 @@ async def investigate(
         company_number,
         search_depth=search_depth,
         context_pages=context_pages,
+        as_of_date=as_of_date,
     )
     return result["finding"]
 
@@ -680,6 +697,7 @@ async def investigate_with_review(
     *,
     search_depth: int = DEFAULT_SEARCH_DEPTH,
     context_pages: int = DEFAULT_CONTEXT_PAGES,
+    as_of_date: date | None = None,
 ) -> tuple[Finding, int | None]:
     """Run one investigation and also return a pending human review ID, if one was raised.
 
@@ -700,6 +718,7 @@ async def investigate_with_review(
         company_number,
         search_depth=search_depth,
         context_pages=context_pages,
+        as_of_date=as_of_date,
     )
     return result["finding"], result.get("review_id")
 
@@ -712,6 +731,7 @@ async def investigate_with_usage(
     *,
     search_depth: int = DEFAULT_SEARCH_DEPTH,
     context_pages: int = DEFAULT_CONTEXT_PAGES,
+    as_of_date: date | None = None,
 ) -> tuple[Finding, ChatUsage | None]:
     """Run one investigation and also return its total token usage.
 
@@ -731,6 +751,7 @@ async def investigate_with_usage(
         company_number,
         search_depth=search_depth,
         context_pages=context_pages,
+        as_of_date=as_of_date,
     )
     usage = _sum_usage(result.get("usage_records", []))
     return result["finding"], usage

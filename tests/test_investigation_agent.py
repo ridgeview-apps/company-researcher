@@ -254,6 +254,7 @@ async def _create_filing_with_pages(
     texts: list[str],
     *,
     made_up_date: str | None = None,
+    filing_date: date = date(2026, 1, 1),
 ) -> DocumentExtraction:
     now = datetime.now(UTC)
     raw_filing = (
@@ -265,7 +266,7 @@ async def _create_filing_with_pages(
         category="accounts",
         type="AA",
         description="accounts",
-        date=date(2026, 1, 1),
+        date=filing_date,
         raw_filing=raw_filing,
         retrieved_at=now,
     )
@@ -557,6 +558,131 @@ async def test_investigate_excludes_a_different_fiscal_years_filing_entirely(
     )
 
     assert finding == correct_finding
+
+
+@pytest.mark.asyncio
+async def test_investigate_excludes_a_filing_registered_after_the_as_of_cutoff(
+    session: AsyncSession, company: Company
+) -> None:
+    """A filing publicly registered after `as_of_date` must be excluded from evidence entirely.
+
+    Mirrors the real Gymshark original/amended FY2022 accounts pair: two
+    filings share near-identical content, but one was registered with
+    Companies House (`Filing.date`) after the cutoff and must not be
+    reachable as evidence, even though `_validate_citations` would
+    otherwise accept it as a real, retrieved page.
+    """
+    before_cutoff = await _create_filing_with_pages(
+        session,
+        "investigation-transaction-as-of-before",
+        ["November papa quebec romeo disclosure, original filing."],
+        filing_date=date(2023, 4, 22),
+    )
+    after_cutoff = await _create_filing_with_pages(
+        session,
+        "investigation-transaction-as-of-after",
+        ["November papa quebec romeo disclosure, amended filing."],
+        filing_date=date(2023, 11, 23),
+    )
+    hallucinated_finding = Finding(
+        claim="Fabricated claim citing a filing registered after the cutoff.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=before_cutoff.id,
+                page_number=1,
+                supporting_text="original filing",
+            )
+        ],
+    )
+    chat_client = FakeChatClient(
+        query="november papa quebec romeo disclosure", finding=hallucinated_finding
+    )
+
+    # Sanity check: with no cutoff, both filings are reachable and the
+    # "before" citation is accepted, confirming the fixture is set up
+    # correctly and any later failure is really about the cutoff.
+    finding = await investigate(
+        session,
+        chat_client,
+        "What did november papa quebec romeo disclose?",
+        company_number=TEST_COMPANY_NUMBER,
+        context_pages=2,
+    )
+    assert finding == hallucinated_finding
+
+    # A cutoff before the second filing's registration date must exclude it
+    # from evidence entirely -- a citation to it is a validation failure,
+    # not merely a low-ranked candidate.
+    finding_citing_future_filing = Finding(
+        claim="Fabricated claim citing the future-dated amended filing.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=after_cutoff.id,
+                page_number=1,
+                supporting_text="amended filing",
+            )
+        ],
+    )
+    chat_client_after_cutoff = FakeChatClient(
+        query="november papa quebec romeo disclosure",
+        finding=finding_citing_future_filing,
+    )
+
+    with pytest.raises(InvestigationAgentError):
+        await investigate(
+            session,
+            chat_client_after_cutoff,
+            "What did november papa quebec romeo disclose?",
+            company_number=TEST_COMPANY_NUMBER,
+            context_pages=2,
+            as_of_date=date(2023, 9, 1),
+        )
+
+
+@pytest.mark.asyncio
+async def test_investigate_as_of_cutoff_does_not_fall_back_when_nothing_qualifies(
+    session: AsyncSession, company: Company
+) -> None:
+    """Unlike the fiscal-year restriction, an as-of cutoff must never fall back to unrestricted.
+
+    A cutoff early enough to exclude every filing must report
+    evidence_sufficient=False rather than silently widening the search --
+    the entire point of this restriction is that a too-early cutoff finds
+    nothing, not that it degrades gracefully into the fiscal-year
+    fallback's behaviour.
+    """
+    await _create_filing_with_pages(
+        session,
+        "investigation-transaction-as-of-too-early",
+        ["Sierra tango uniform victor disclosure, filed in 2026."],
+        filing_date=date(2026, 1, 1),
+    )
+    insufficient_finding = Finding(
+        claim="The retrieved evidence does not address this question.",
+        claim_type="fact",
+        evidence_sufficient=False,
+        citations=[],
+    )
+    chat_client = FakeChatClient(
+        query="sierra tango uniform victor disclosure", finding=insufficient_finding
+    )
+
+    finding = await investigate(
+        session,
+        chat_client,
+        "What did sierra tango uniform victor disclose?",
+        company_number=TEST_COMPANY_NUMBER,
+        as_of_date=date(2020, 1, 1),
+    )
+
+    assert finding.evidence_sufficient is False
+    assert finding.citations == []
+    synthesis_prompt = chat_client.complete_structured_calls[0][-1].content
+    assert "No evidence pages were retrieved" in synthesis_prompt
 
 
 @pytest.mark.asyncio
