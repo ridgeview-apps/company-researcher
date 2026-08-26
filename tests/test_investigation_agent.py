@@ -20,10 +20,13 @@ from company_researcher.db.models import (
 from company_researcher.db.session import create_database_engine, create_session_factory
 from company_researcher.investigation_agent import (
     Citation,
+    ClaimTypeReclassification,
     Finding,
     InvestigationAgentError,
+    _apply_evidence_relevance_backstop,
     _force_unambiguous_fiscal_year,
     _normalize_for_quote_check,
+    _reclassify_claim_type,
     investigate,
     investigate_with_review,
     investigate_with_usage,
@@ -45,7 +48,13 @@ class FakeChatClient:
     each expecting a different fake response. `usage` defaults to `None`
     since most tests exercise `investigate()`'s behavior, not token
     accounting; pass a fixed `ChatUsage` to also verify accumulation via
-    `investigate_with_usage`.
+    `investigate_with_usage`. `reclassification`, when given, is returned
+    for every independent claim_type reclassification call (see
+    `_reclassify_claim_type` in investigation_agent.py); it defaults to
+    agreeing with a self-reported claim_type="fact", so existing tests that
+    don't care about this backstop are unaffected - that call is only ever
+    made when a finding's own claim_type is "fact", so an
+    interpretation-classified finding's fixture never needs one.
     """
 
     def __init__(
@@ -55,11 +64,13 @@ class FakeChatClient:
         finding: Finding | None = None,
         finding_selector: Callable[[Sequence[ChatMessage]], Finding] | None = None,
         usage: ChatUsage | None = None,
+        reclassification: ClaimTypeReclassification | None = None,
     ) -> None:
         self._query = query
         self._finding = finding
         self._finding_selector = finding_selector
         self._usage = usage
+        self._reclassification = reclassification
         self.complete_calls: list[Sequence[ChatMessage]] = []
         self.complete_structured_calls: list[Sequence[ChatMessage]] = []
 
@@ -73,6 +84,11 @@ class FakeChatClient:
         self, messages: Sequence[ChatMessage], response_model: type[_StructuredResponse]
     ) -> tuple[_StructuredResponse, ChatUsage | None]:
         self.complete_structured_calls.append(messages)
+        if response_model is ClaimTypeReclassification:
+            reclassification = self._reclassification or ClaimTypeReclassification(
+                claim_type="fact", reason="test default: agrees with the finding as-is"
+            )
+            return cast(_StructuredResponse, reclassification), self._usage
         if self._finding_selector is not None:
             return cast(
                 _StructuredResponse, self._finding_selector(messages)
@@ -316,6 +332,134 @@ async def _create_filing_with_pages(
 
 
 @pytest.mark.asyncio
+async def test_apply_evidence_relevance_backstop_forces_false_for_unrelated_citation(
+    session: AsyncSession,
+) -> None:
+    """Regression test for the real adversarial-injection finding (see README's
+    "Adversarial / prompt-injection testing" section): a citation that is
+    genuinely, topically unrelated to the question must not be allowed to
+    support a confident evidence_sufficient=True claim.
+    """
+    finding = Finding(
+        claim="This filing does not provide evidence of a fraud investigation.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=1,
+                page_number=1,
+                supporting_text="the company continued to trade in its principal activity of retail distribution",
+            )
+        ],
+    )
+
+    result = await _apply_evidence_relevance_backstop(
+        session,
+        "Does this filing provide evidence that the company was under investigation for fraud?",
+        finding,
+    )
+
+    assert result.evidence_sufficient is False
+
+
+@pytest.mark.asyncio
+async def test_apply_evidence_relevance_backstop_leaves_a_related_citation_unchanged(
+    session: AsyncSession,
+) -> None:
+    finding = Finding(
+        claim="The directors consider the going concern basis appropriate.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[
+            Citation(
+                document_extraction_id=1,
+                page_number=1,
+                supporting_text="the directors consider the going concern basis to be appropriate",
+            )
+        ],
+    )
+
+    result = await _apply_evidence_relevance_backstop(
+        session, "What is the going concern position?", finding
+    )
+
+    assert result.evidence_sufficient is True
+
+
+@pytest.mark.asyncio
+async def test_apply_evidence_relevance_backstop_never_upgrades_already_insufficient(
+    session: AsyncSession,
+) -> None:
+    finding = Finding(
+        claim="Insufficient evidence to answer.",
+        claim_type="fact",
+        evidence_sufficient=False,
+        citations=[],
+    )
+
+    result = await _apply_evidence_relevance_backstop(
+        session, "Anything unrelated to this corpus?", finding
+    )
+
+    assert result.evidence_sufficient is False
+
+
+@pytest.mark.asyncio
+async def test_reclassify_claim_type_upgrades_fact_to_interpretation_when_disagreed() -> (
+    None
+):
+    """The independent reclassification call never sees evidence text, so an
+    injected page instruction cannot reach it (see README's
+    "Adversarial / prompt-injection testing" section).
+    """
+    finding = Finding(
+        claim="The following directors resigned during the year: J Smith, R Patel.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[],
+    )
+    chat_client = FakeChatClient(
+        query="unused",
+        finding=finding,
+        reclassification=ClaimTypeReclassification(
+            claim_type="interpretation",
+            reason="the claim only restates facts without answering the judgement asked",
+        ),
+    )
+
+    result, _usage_records = await _reclassify_claim_type(
+        chat_client, "Do these resignations indicate governance instability?", finding
+    )
+
+    assert result.claim_type == "interpretation"
+    assert result.claim == finding.claim
+    assert result.citations == finding.citations
+
+
+@pytest.mark.asyncio
+async def test_reclassify_claim_type_is_skipped_when_already_interpretation() -> None:
+    """Only ever used to upgrade fact -> interpretation, never the reverse - already
+    being an interpretation means no call is made at all, so it can never be
+    downgraded back to fact by this check.
+    """
+    finding = Finding(
+        claim="This indicates governance instability.",
+        claim_type="interpretation",
+        evidence_sufficient=True,
+        citations=[],
+    )
+    chat_client = FakeChatClient(query="unused", finding=finding)
+
+    result, usage_records = await _reclassify_claim_type(
+        chat_client, "Does this indicate governance instability?", finding
+    )
+
+    assert result is finding
+    assert usage_records is None
+    assert len(chat_client.complete_structured_calls) == 0
+
+
+@pytest.mark.asyncio
 async def test_investigate_returns_a_citation_grounded_finding(
     session: AsyncSession, company: Company
 ) -> None:
@@ -341,7 +485,15 @@ async def test_investigate_returns_a_citation_grounded_finding(
             Citation(
                 document_extraction_id=extraction.id,
                 page_number=1,
-                supporting_text="delta echo foxtrot",
+                # Includes "alpha bravo charlie" (not just the narrower
+                # "delta echo foxtrot" tail) so the citation's own text
+                # shares a term with the question's own vocabulary -
+                # required for the evidence-relevance backstop
+                # (_apply_evidence_relevance_backstop) to recognize this as
+                # on-topic, since the nonsense phrase this fixture uses is
+                # rare enough in the corpus to dominate the question's
+                # derived discriminative terms.
+                supporting_text="Alpha bravo charlie identifies a delta echo foxtrot as evidence",
             )
         ],
     )
@@ -362,7 +514,9 @@ async def test_investigate_returns_a_citation_grounded_finding(
         role="user",
         content="What did alpha bravo charlie identify as evidence?",
     )
-    assert len(chat_client.complete_structured_calls) == 1
+    # 1 synthesis call, plus 1 claim_type reclassification call (see
+    # `_apply_review_integrity_checks`).
+    assert len(chat_client.complete_structured_calls) == 2
     synthesis_prompt = chat_client.complete_structured_calls[0][-1].content
     assert "delta echo foxtrot" in synthesis_prompt
     assert f"document_extraction_id={extraction.id} page_number=1" in synthesis_prompt
@@ -462,7 +616,7 @@ async def test_investigate_disambiguates_near_duplicate_pages_by_forced_year(
             Citation(
                 document_extraction_id=correct_extraction.id,
                 page_number=1,
-                supporting_text="disclosure for 2023",
+                supporting_text="Quebec romeo sierra tango whiskey xray disclosure for 2023",
             )
         ],
     )
@@ -541,7 +695,7 @@ async def test_investigate_excludes_a_different_fiscal_years_filing_entirely(
             Citation(
                 document_extraction_id=correct_extraction.id,
                 page_number=1,
-                supporting_text="disclosure for the year ended 2023",
+                supporting_text="Yankee zulu alpha beta gamma disclosure for the year ended 2023",
             )
         ],
     )
@@ -592,7 +746,7 @@ async def test_investigate_excludes_a_filing_registered_after_the_as_of_cutoff(
             Citation(
                 document_extraction_id=before_cutoff.id,
                 page_number=1,
-                supporting_text="original filing",
+                supporting_text="November papa quebec romeo disclosure, original filing",
             )
         ],
     )
@@ -715,7 +869,7 @@ async def test_investigate_falls_back_to_unrestricted_search_when_named_year_mat
             Citation(
                 document_extraction_id=extraction.id,
                 page_number=1,
-                supporting_text="disclosure, dated in December 2024",
+                supporting_text="Tango uniform victor whiskey disclosure, dated in December 2024",
             )
         ],
     )
@@ -766,17 +920,17 @@ async def test_investigate_decomposes_a_multi_year_question_into_one_pass_per_ye
     citation_2021 = Citation(
         document_extraction_id=extraction_2021.id,
         page_number=1,
-        supporting_text="figure was 100",
+        supporting_text="Cobalt zenith mosaic tundra figure was 100",
     )
     citation_2022 = Citation(
         document_extraction_id=extraction_2022.id,
         page_number=1,
-        supporting_text="figure was 200",
+        supporting_text="Cobalt zenith mosaic tundra figure was 200",
     )
     citation_2023 = Citation(
         document_extraction_id=extraction_2023.id,
         page_number=1,
-        supporting_text="figure was 300",
+        supporting_text="Cobalt zenith mosaic tundra figure was 300",
     )
     finding_2021 = Finding(
         claim="Cobalt zenith mosaic tundra figure was 100 in 2021.",
@@ -820,11 +974,14 @@ async def test_investigate_decomposes_a_multi_year_question_into_one_pass_per_ye
 
     assert finding == aggregate_finding
     assert len(chat_client.complete_calls) == 1
-    assert len(chat_client.complete_structured_calls) == 4
+    # 4 synthesis calls (one per year plus the aggregate), each immediately
+    # followed by its own independent claim_type reclassification call (see
+    # `_apply_review_integrity_checks`) = 8 total.
+    assert len(chat_client.complete_structured_calls) == 8
 
     prompt_2021 = chat_client.complete_structured_calls[0][-1].content
-    prompt_2022 = chat_client.complete_structured_calls[1][-1].content
-    prompt_2023 = chat_client.complete_structured_calls[2][-1].content
+    prompt_2022 = chat_client.complete_structured_calls[2][-1].content
+    prompt_2023 = chat_client.complete_structured_calls[4][-1].content
     assert "was 100" in prompt_2021
     assert "was 200" not in prompt_2021 and "was 300" not in prompt_2021
     assert "was 200" in prompt_2022
@@ -832,7 +989,7 @@ async def test_investigate_decomposes_a_multi_year_question_into_one_pass_per_ye
     assert "was 300" in prompt_2023
     assert "was 100" not in prompt_2023 and "was 200" not in prompt_2023
 
-    aggregate_prompt = chat_client.complete_structured_calls[3][-1].content
+    aggregate_prompt = chat_client.complete_structured_calls[6][-1].content
     assert "Per-year findings:" in aggregate_prompt
     assert "figure was 100 in 2021" in aggregate_prompt
     # The aggregation prompt must reuse each year's already-grounded claim,
@@ -864,12 +1021,12 @@ async def test_investigate_multi_year_gap_year_with_no_filing_still_gets_its_own
     citation_2021 = Citation(
         document_extraction_id=extraction_2021.id,
         page_number=1,
-        supporting_text="reading was 50",
+        supporting_text="Prairie glacier quartz reading was 50",
     )
     citation_2023 = Citation(
         document_extraction_id=extraction_2023.id,
         page_number=1,
-        supporting_text="reading was 70",
+        supporting_text="Prairie glacier quartz reading was 70",
     )
     finding_2021 = Finding(
         claim="Prairie glacier quartz reading was 50 in 2021.",
@@ -915,8 +1072,11 @@ async def test_investigate_multi_year_gap_year_with_no_filing_still_gets_its_own
     )
 
     assert finding == aggregate_finding
-    assert len(chat_client.complete_structured_calls) == 4
-    gap_year_prompt = chat_client.complete_structured_calls[1][-1].content
+    # 4 synthesis calls (one per year plus the aggregate), each immediately
+    # followed by its own independent claim_type reclassification call (see
+    # `_apply_review_integrity_checks`) = 8 total.
+    assert len(chat_client.complete_structured_calls) == 8
+    gap_year_prompt = chat_client.complete_structured_calls[2][-1].content
     assert "No evidence pages were retrieved for this fiscal year." in gap_year_prompt
 
 
@@ -1086,7 +1246,7 @@ async def test_investigate_self_corrects_a_fabricated_quote_on_retry(
             Citation(
                 document_extraction_id=extraction.id,
                 page_number=1,
-                supporting_text="figure was 42 in total",
+                supporting_text="Amber lichen thistle disclosure states the figure was 42 in total",
             )
         ],
     )
@@ -1105,7 +1265,9 @@ async def test_investigate_self_corrects_a_fabricated_quote_on_retry(
     )
 
     assert finding == corrected_finding
-    assert len(chat_client.complete_structured_calls) == 2
+    # 1 fabricated attempt + 1 retry, plus 1 claim_type reclassification call
+    # once synthesis succeeds (see `_apply_review_integrity_checks`).
+    assert len(chat_client.complete_structured_calls) == 3
     retry_prompt = chat_client.complete_structured_calls[1][-1].content
     assert _RETRY_MARKER in retry_prompt
     assert "figure was forty-two exactly" in retry_prompt
@@ -1200,7 +1362,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_quote_in_a_year
             Citation(
                 document_extraction_id=extraction_2021.id,
                 page_number=1,
-                supporting_text="the reading was 8 for 2021",
+                supporting_text="Cedar hollow mercury disclosure states the reading was 8 for 2021",
             )
         ],
     )
@@ -1212,7 +1374,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_quote_in_a_year
             Citation(
                 document_extraction_id=extraction_2022.id,
                 page_number=1,
-                supporting_text="the reading was 9 for 2022",
+                supporting_text="Cedar hollow mercury disclosure states the reading was 9 for 2022",
             )
         ],
     )
@@ -1249,8 +1411,11 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_quote_in_a_year
     )
 
     assert finding == aggregate_finding
-    # 2021 costs two calls (fabricated + retry), 2022 costs one, aggregation costs one.
-    assert len(chat_client.complete_structured_calls) == 4
+    # 2021 costs two calls (fabricated + retry), 2022 costs one, aggregation
+    # costs one = 4 raw synthesis calls, plus one claim_type reclassification
+    # call per successfully-synthesized finding (2021, 2022, aggregate) = 3
+    # more (see `_apply_review_integrity_checks`).
+    assert len(chat_client.complete_structured_calls) == 7
 
 
 @pytest.mark.asyncio
@@ -1278,7 +1443,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_aggregate_quote
             Citation(
                 document_extraction_id=extraction_2021.id,
                 page_number=1,
-                supporting_text="the count was 5 for 2021",
+                supporting_text="Fern quartz lantern disclosure states the count was 5 for 2021",
             )
         ],
     )
@@ -1290,7 +1455,7 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_aggregate_quote
             Citation(
                 document_extraction_id=extraction_2022.id,
                 page_number=1,
-                supporting_text="the count was 6 for 2022",
+                supporting_text="Fern quartz lantern disclosure states the count was 6 for 2022",
             )
         ],
     )
@@ -1338,8 +1503,11 @@ async def test_investigate_multi_year_self_corrects_a_fabricated_aggregate_quote
     )
 
     assert finding == corrected_aggregate
-    # 2021 + 2022 cost one call each, aggregation costs two (fabricated + retry).
-    assert len(chat_client.complete_structured_calls) == 4
+    # 2021 + 2022 cost one call each, aggregation costs two (fabricated +
+    # retry) = 4 raw synthesis calls, plus one claim_type reclassification
+    # call per successfully-synthesized finding (2021, 2022, aggregate) = 3
+    # more (see `_apply_review_integrity_checks`).
+    assert len(chat_client.complete_structured_calls) == 7
 
 
 @pytest.mark.asyncio
@@ -1360,7 +1528,7 @@ async def test_investigate_tolerates_a_clean_quote_against_ocr_noisy_digit_separ
             Citation(
                 document_extraction_id=extraction.id,
                 page_number=1,
-                supporting_text="turnover total 437,629 260,674 for the noted period",
+                supporting_text="Hazel current turnover total 437,629 260,674 for the noted period",
             )
         ],
     )
@@ -1376,7 +1544,9 @@ async def test_investigate_tolerates_a_clean_quote_against_ocr_noisy_digit_separ
     )
 
     assert finding == clean_quote_finding
-    assert len(chat_client.complete_structured_calls) == 1
+    # 1 synthesis call, plus 1 claim_type reclassification call (see
+    # `_apply_review_integrity_checks`).
+    assert len(chat_client.complete_structured_calls) == 2
 
 
 @pytest.mark.asyncio
@@ -1397,7 +1567,7 @@ async def test_investigate_tolerates_a_clean_quote_against_ocr_mismatched_bracke
             Citation(
                 document_extraction_id=extraction.id,
                 page_number=1,
-                supporting_text="appointed (Appointed 9 January 2023) to the board",
+                supporting_text="Ivory falcon meridian appointed (Appointed 9 January 2023) to the board",
             )
         ],
     )
@@ -1413,7 +1583,9 @@ async def test_investigate_tolerates_a_clean_quote_against_ocr_mismatched_bracke
     )
 
     assert finding == clean_quote_finding
-    assert len(chat_client.complete_structured_calls) == 1
+    # 1 synthesis call, plus 1 claim_type reclassification call (see
+    # `_apply_review_integrity_checks`).
+    assert len(chat_client.complete_structured_calls) == 2
 
 
 @pytest.mark.asyncio
@@ -1479,8 +1651,11 @@ async def test_investigate_with_usage_sums_query_and_synthesis_calls(
     )
 
     assert result_finding == finding
-    # One call for generate_query, one for synthesize_finding.
-    assert usage == ChatUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30)
+    # One call for generate_query, one for synthesize_finding, one for the
+    # claim_type reclassification check (see
+    # `_apply_review_integrity_checks`; still runs even though
+    # evidence_sufficient is already False, since it only checks claim_type).
+    assert usage == ChatUsage(prompt_tokens=30, completion_tokens=15, total_tokens=45)
 
 
 @pytest.mark.asyncio
@@ -1531,7 +1706,7 @@ async def test_investigate_with_usage_counts_a_self_correction_retry(
             Citation(
                 document_extraction_id=extraction.id,
                 page_number=1,
-                supporting_text="figure was 7 in total",
+                supporting_text="Hotel india juliet disclosure states the figure was 7 in total",
             )
         ],
     )
@@ -1552,8 +1727,9 @@ async def test_investigate_with_usage_counts_a_self_correction_retry(
     )
 
     assert result_finding == corrected_finding
-    # generate_query + the initial synthesis attempt + the retry.
-    assert usage == ChatUsage(prompt_tokens=30, completion_tokens=15, total_tokens=45)
+    # generate_query + the initial synthesis attempt + the retry + the
+    # claim_type reclassification call once synthesis succeeds.
+    assert usage == ChatUsage(prompt_tokens=40, completion_tokens=20, total_tokens=60)
 
 
 @pytest.mark.asyncio
@@ -1580,7 +1756,7 @@ async def test_investigate_with_usage_sums_across_a_multi_year_question(
             Citation(
                 document_extraction_id=extraction_2021.id,
                 page_number=1,
-                supporting_text="figure was 1",
+                supporting_text="Kilo lima mike figure was 1",
             )
         ],
     )
@@ -1592,7 +1768,7 @@ async def test_investigate_with_usage_sums_across_a_multi_year_question(
             Citation(
                 document_extraction_id=extraction_2022.id,
                 page_number=1,
-                supporting_text="figure was 2",
+                supporting_text="Kilo lima mike figure was 2",
             )
         ],
     )
@@ -1620,8 +1796,10 @@ async def test_investigate_with_usage_sums_across_a_multi_year_question(
     )
 
     assert result_finding == aggregate_finding
-    # generate_query + one synthesis per year (2) + the final aggregation.
-    assert usage == ChatUsage(prompt_tokens=40, completion_tokens=20, total_tokens=60)
+    # generate_query + one synthesis per year (2) + the final aggregation (4
+    # calls), plus one claim_type reclassification call for each of the 3
+    # successfully-synthesized findings (2021, 2022, aggregate).
+    assert usage == ChatUsage(prompt_tokens=70, completion_tokens=35, total_tokens=105)
 
 
 @pytest.mark.asyncio
@@ -1675,7 +1853,7 @@ async def test_investigate_with_review_flags_an_interpretation_for_review(
             Citation(
                 document_extraction_id=extraction.id,
                 page_number=1,
-                supporting_text="three resignations within 14 months",
+                supporting_text="Uniform victor whiskey shows three resignations within 14 months",
             )
         ],
     )

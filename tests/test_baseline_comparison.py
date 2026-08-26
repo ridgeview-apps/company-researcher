@@ -226,7 +226,7 @@ async def test_compare_question_reports_both_findings_and_citation_realism(
             Citation(
                 document_extraction_id=extraction.id,
                 page_number=1,
-                supporting_text="disclosure of a real figure: 42",
+                supporting_text="November oscar papa disclosure of a real figure: 42",
             )
         ],
     )
@@ -271,9 +271,11 @@ async def test_compare_question_reports_both_findings_and_citation_realism(
     assert comparison.question_id == "q-fake"
     assert comparison.specialized_finding == specialized_finding
     assert comparison.specialized_error is None
-    # generate_query + synthesize_finding each contribute specialized_call_usage.
+    # generate_query + synthesize_finding + the claim_type reclassification
+    # call (see `_apply_review_integrity_checks`) each contribute
+    # specialized_call_usage.
     assert comparison.specialized_usage == ChatUsage(
-        prompt_tokens=20, completion_tokens=10, total_tokens=30
+        prompt_tokens=30, completion_tokens=15, total_tokens=45
     )
     assert comparison.baseline_finding == baseline_finding
     assert comparison.baseline_usage == baseline_usage

@@ -10,12 +10,17 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.db.models import DocumentPage
+from company_researcher.discriminative_query import derive_discriminative_query
 from company_researcher.fiscal_year_extraction import extract_fiscal_years
 from company_researcher.fiscal_year_lookup import (
     document_extraction_ids_for_fiscal_year,
 )
 from company_researcher.human_review import needs_human_review, record_pending_review
-from company_researcher.lexical_search import PageMatch, search_pages
+from company_researcher.lexical_search import (
+    PageMatch,
+    search_pages,
+    text_matches_query,
+)
 from company_researcher.llm_client import ChatMessage, ChatUsage, UsageAwareChatProvider
 
 DEFAULT_SEARCH_DEPTH = 50
@@ -82,8 +87,35 @@ _AGGREGATE_SYSTEM_PROMPT = (
 )
 
 
+_CLAIM_TYPE_RECLASSIFICATION_SYSTEM_PROMPT = (
+    "You are checking whether a claim actually answers a question, using "
+    "only the question and the claim - no evidence text, so you cannot "
+    "judge whether the claim is true, only whether its own wording, read "
+    "against the question, is a direct statement of what was found (fact) "
+    "or goes beyond that into a judgement, inference, or assessment of "
+    "significance (interpretation). A claim that declines to answer an "
+    "evaluative part of the question and instead only restates an "
+    "underlying fact must still be classified as 'interpretation' if the "
+    "question itself asks for a judgement (for example 'does X indicate "
+    "Y', 'does X suggest Y', 'is X significant') and the claim does not "
+    "actually render that judgement - presenting an incomplete answer as a "
+    "settled fact is itself not something that should be treated as fully "
+    "settled without human review. Respond with a claim_type of exactly "
+    "'fact' or 'interpretation', and a one-sentence reason."
+)
+
+
 class InvestigationAgentError(Exception):
     """Raised when the agent produces a finding that violates its evidence contract."""
+
+
+class ClaimTypeReclassification(BaseModel):
+    """An independent, evidence-blind re-check of a finding's self-reported claim_type."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_type: Literal["fact", "interpretation"]
+    reason: str
 
 
 def _force_unambiguous_fiscal_year(query: str, question: str) -> str:
@@ -391,6 +423,103 @@ async def _synthesize_and_validate(
     return retried_finding, usage_records
 
 
+async def _apply_evidence_relevance_backstop(
+    session: AsyncSession, question: str, finding: Finding
+) -> Finding:
+    """Force evidence_sufficient=False when no citation shares any discriminative term with the question.
+
+    Closes a real gap this project's adversarial-injection testing measured
+    (see README.md's "Adversarial / prompt-injection testing" section): a
+    page containing text unrelated to the question can still be cited as if
+    it answered it, with the model self-reporting evidence_sufficient=True
+    regardless. Deterministic and reused rather than invented: reuses
+    `derive_discriminative_query`'s existing corpus-wide document-frequency
+    ranking (already built and measured for retrieval) to find the
+    question's genuinely rare, topic-specific terms - checking for overlap
+    with *any* content word (via plain `derive_query`) would false-positive
+    on generic words nearly every filing page contains (e.g. "company"),
+    exactly the boilerplate-repetition problem already diagnosed for
+    page-level document frequency elsewhere in this project. The match
+    itself reuses `text_matches_query`'s stemmed, OR-combined PostgreSQL
+    text search - the same mechanism `search_pages` uses for retrieval - so
+    a question built from "resignations" still matches a citation that says
+    "resigned", rather than requiring exact token identity. Checked against
+    each citation's own `supporting_text`, not the full retrieved page: the
+    page may also contain unrelated or injected content that happens to
+    mention the question's terms without the citation itself relying on it
+    (see README for the observed case this distinction defends against).
+    Only ever narrows evidence_sufficient from True to False, never the
+    reverse - a citation that already fails this check was never going to
+    become sufficient for something else.
+    """
+    if not finding.evidence_sufficient:
+        return finding
+    discriminative_query = await derive_discriminative_query(session, question)
+    if not discriminative_query:
+        return finding
+    citation_text = " ".join(
+        citation.supporting_text for citation in finding.citations
+    ).strip()
+    if citation_text and await text_matches_query(
+        session, citation_text, discriminative_query
+    ):
+        return finding
+    return finding.model_copy(update={"evidence_sufficient": False})
+
+
+async def _reclassify_claim_type(
+    chat_client: UsageAwareChatProvider, question: str, finding: Finding
+) -> tuple[Finding, ChatUsage | None]:
+    """Re-check a self-reported claim_type="fact" with a call that never sees evidence text.
+
+    Closes the other real gap adversarial-injection testing measured: an
+    injected instruction embedded in a retrieved page can bait the
+    synthesis call into self-labelling an interpretation - or an answer
+    that dodges an evaluative question by only restating an underlying
+    fact - as claim_type="fact". Because this second call is given only the
+    question and the already-produced claim, never any evidence-derived
+    text, no instruction hidden in a page can reach it. Deliberately
+    asymmetric: only ever called when the self-reported claim_type is
+    "fact" (skipped entirely when already "interpretation"), and only ever
+    used to upgrade fact -> interpretation, never the reverse - this is a
+    backstop against under-flagging, not a general-purpose reclassifier
+    that could itself become a new way to suppress review.
+    """
+    if finding.claim_type == "interpretation":
+        return finding, None
+    user_message = f"Question: {question}\n\nClaim: {finding.claim}"
+    reclassification, usage = await chat_client.complete_structured_with_usage(
+        [
+            ChatMessage(
+                role="system", content=_CLAIM_TYPE_RECLASSIFICATION_SYSTEM_PROMPT
+            ),
+            ChatMessage(role="user", content=user_message),
+        ],
+        ClaimTypeReclassification,
+    )
+    if reclassification.claim_type == finding.claim_type:
+        return finding, usage
+    return finding.model_copy(update={"claim_type": reclassification.claim_type}), usage
+
+
+async def _apply_review_integrity_checks(
+    session: AsyncSession,
+    chat_client: UsageAwareChatProvider,
+    question: str,
+    finding: Finding,
+) -> tuple[Finding, list[ChatUsage]]:
+    """Apply both human-review-gate backstops to a synthesized finding.
+
+    Both checks only ever push a finding toward requiring review, never
+    away from it - a deliberately asymmetric safety net against the
+    self-classification manipulation adversarial-injection testing found,
+    not a general-purpose reclassifier.
+    """
+    finding = await _apply_evidence_relevance_backstop(session, question, finding)
+    finding, usage = await _reclassify_claim_type(chat_client, question, finding)
+    return finding, [usage] if usage is not None else []
+
+
 def _format_evidence_text(pages: Sequence[RetrievedPage], *, empty_message: str) -> str:
     """Render retrieved pages as labelled evidence text for a synthesis prompt."""
     if not pages:
@@ -512,9 +641,14 @@ def _build_graph(
         finding, usage_records = await _synthesize_and_validate(
             chat_client, _FINDING_SYSTEM_PROMPT, user_message, pages
         )
+        finding, integrity_usage = await _apply_review_integrity_checks(
+            session, chat_client, state["question"], finding
+        )
         return {
             "finding": finding,
-            "usage_records": state.get("usage_records", []) + usage_records,
+            "usage_records": state.get("usage_records", [])
+            + usage_records
+            + integrity_usage,
         }
 
     async def gather_year_findings_node(
@@ -548,7 +682,11 @@ def _build_graph(
             finding, usage_records = await _synthesize_and_validate(
                 chat_client, _FINDING_SYSTEM_PROMPT, user_message, pages
             )
+            finding, integrity_usage = await _apply_review_integrity_checks(
+                session, chat_client, question, finding
+            )
             all_usage_records.extend(usage_records)
+            all_usage_records.extend(integrity_usage)
             year_evidence.append(
                 YearEvidence(fiscal_year=year, retrieved_pages=pages, finding=finding)
             )
@@ -569,9 +707,14 @@ def _build_graph(
         finding, usage_records = await _synthesize_and_validate(
             chat_client, _AGGREGATE_SYSTEM_PROMPT, user_message, all_pages
         )
+        finding, integrity_usage = await _apply_review_integrity_checks(
+            session, chat_client, state["question"], finding
+        )
         return {
             "finding": finding,
-            "usage_records": state.get("usage_records", []) + usage_records,
+            "usage_records": state.get("usage_records", [])
+            + usage_records
+            + integrity_usage,
         }
 
     async def human_review_gate_node(state: InvestigationState) -> InvestigationState:

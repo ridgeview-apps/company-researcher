@@ -15,7 +15,7 @@ from company_researcher.db.models import (
     FilingDocument,
 )
 from company_researcher.db.session import create_database_engine, create_session_factory
-from company_researcher.lexical_search import search_pages
+from company_researcher.lexical_search import search_pages, text_matches_query
 
 TEST_COMPANY_NUMBER = "TE000006"
 OTHER_COMPANY_NUMBER = "TE000007"
@@ -339,3 +339,37 @@ async def test_search_pages_composes_as_of_date_with_document_extraction_ids(
     assert matched_extraction_ids == {fiscal_year_match_before_cutoff.id}
     assert fiscal_year_match_after_cutoff.id not in matched_extraction_ids
     assert other_fiscal_year_before_cutoff.id not in matched_extraction_ids
+
+
+@pytest.mark.asyncio
+async def test_text_matches_query_true_when_a_term_overlaps(
+    session: AsyncSession,
+) -> None:
+    matched = await text_matches_query(
+        session, "the going concern basis is appropriate", "going concern"
+    )
+
+    assert matched is True
+
+
+@pytest.mark.asyncio
+async def test_text_matches_query_stems_word_forms(session: AsyncSession) -> None:
+    """A query built from a noun form ("resignations") must still match text using a different, related word form ("resigned") - the same stemming `search_pages` already relies on for retrieval."""
+    matched = await text_matches_query(
+        session, "the director resigned in March", "resignations"
+    )
+
+    assert matched is True
+
+
+@pytest.mark.asyncio
+async def test_text_matches_query_false_when_genuinely_unrelated(
+    session: AsyncSession,
+) -> None:
+    matched = await text_matches_query(
+        session,
+        "the company continued to trade in retail distribution",
+        "fraud investigation",
+    )
+
+    assert matched is False

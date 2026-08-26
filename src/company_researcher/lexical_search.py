@@ -4,6 +4,7 @@ from datetime import date
 
 from sqlalchemy import Text, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from company_researcher.db.models import (
     DocumentExtraction,
@@ -22,6 +23,34 @@ class PageMatch:
     document_extraction_id: int
     page_number: int
     rank: float
+
+
+def _or_combined_tsquery(query: str) -> ColumnElement[str]:
+    """Build an OR-combined, stemmed tsquery expression from `query`.
+
+    Shared by `search_pages` and `text_matches_query` so both use the exact
+    same stemming and OR-combination rules rather than two independently
+    tuned copies of the same logic.
+    """
+    stemmed_terms = func.plainto_tsquery(_TEXT_SEARCH_CONFIGURATION, query).cast(Text)
+    return func.to_tsquery(
+        _TEXT_SEARCH_CONFIGURATION, func.replace(stemmed_terms, " & ", " | ")
+    )
+
+
+async def text_matches_query(session: AsyncSession, text: str, query: str) -> bool:
+    """Check whether `text` contains at least one stemmed term from `query`.
+
+    Reuses `search_pages`'s own OR-combined, stemmed tsquery construction, so
+    word-form variation (e.g. a query built from "resignations" matching
+    text containing "resigned") is handled the same way retrieval already
+    handles it, rather than by a separately hand-rolled matching rule.
+    """
+    tsvector = func.to_tsvector(_TEXT_SEARCH_CONFIGURATION, text)
+    result = await session.scalar(
+        select(tsvector.op("@@")(_or_combined_tsquery(query)))
+    )
+    return bool(result)
 
 
 async def search_pages(
@@ -64,10 +93,7 @@ async def search_pages(
     which silently changed (and changed a real evaluation score) the
     first time a second `company_number`-restricting join was added here.
     """
-    stemmed_terms = func.plainto_tsquery(_TEXT_SEARCH_CONFIGURATION, query).cast(Text)
-    tsquery = func.to_tsquery(
-        _TEXT_SEARCH_CONFIGURATION, func.replace(stemmed_terms, " & ", " | ")
-    )
+    tsquery = _or_combined_tsquery(query)
     tsvector = func.to_tsvector(_TEXT_SEARCH_CONFIGURATION, DocumentPage.text)
     rank = func.ts_rank(tsvector, tsquery).label("rank")
     statement = select(
