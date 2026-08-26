@@ -1,10 +1,12 @@
 import json
+import os
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import SecretStr
 
 from company_researcher import cli
 from company_researcher.companies_house.exceptions import (
@@ -15,6 +17,7 @@ from company_researcher.companies_house.exceptions import (
     CompaniesHouseRateLimitError,
     CompaniesHouseResponseError,
 )
+from company_researcher.config import Settings
 from company_researcher.db.models import (
     EMBEDDING_DIMENSIONS,
     DocumentExtraction,
@@ -31,6 +34,53 @@ from company_researcher.investigation_agent import (
 )
 from company_researcher.llm_client import ChatError
 from company_researcher.pdf_extraction import PdfExtractionError
+
+_LANGSMITH_ENV_VARS = ("LANGSMITH_TRACING", "LANGSMITH_API_KEY", "LANGSMITH_PROJECT")
+
+
+def test_configure_langsmith_tracing_sets_environment_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in _LANGSMITH_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(
+        langsmith_tracing_enabled=True,
+        langsmith_api_key=SecretStr("test-langsmith-key"),
+        langsmith_project="test-project",
+    )
+
+    cli._configure_langsmith_tracing(settings)
+
+    assert os.environ["LANGSMITH_TRACING"] == "true"
+    assert os.environ["LANGSMITH_API_KEY"] == "test-langsmith-key"
+    assert os.environ["LANGSMITH_PROJECT"] == "test-project"
+
+
+def test_configure_langsmith_tracing_is_a_noop_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in _LANGSMITH_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(
+        langsmith_tracing_enabled=False, langsmith_api_key=SecretStr("unused-key")
+    )
+
+    cli._configure_langsmith_tracing(settings)
+
+    assert "LANGSMITH_TRACING" not in os.environ
+    assert "LANGSMITH_API_KEY" not in os.environ
+
+
+def test_configure_langsmith_tracing_is_a_noop_without_a_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in _LANGSMITH_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(langsmith_tracing_enabled=True, langsmith_api_key=None)
+
+    cli._configure_langsmith_tracing(settings)
+
+    assert "LANGSMITH_TRACING" not in os.environ
 
 
 def test_main_prints_inspection(

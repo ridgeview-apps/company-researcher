@@ -74,6 +74,10 @@ can:
   guardrails actually hold regardless of the model's behaviour and which
   depend on the model's own instruction-following (see
   [Adversarial / prompt-injection testing](#adversarial--prompt-injection-testing)
+  below); and
+- optionally trace a real investigation run's nodes, per-year decomposition,
+  and individual LLM calls to LangSmith for debugging (see
+  [Observability: tracing investigation runs with LangSmith](#observability-tracing-investigation-runs-with-langsmith)
   below).
 
 ## Prerequisites
@@ -85,6 +89,9 @@ can:
 - A Companies House REST API key
 - An OpenAI API key (only needed for `embed-document`, `evaluate-retrieval
   --retrieval-method vector|hybrid`, `investigate`, and `calibrate-judge`)
+- Optionally, a [LangSmith](https://smith.langchain.com) API key, only
+  needed to trace an `investigate` run (see
+  [Observability: tracing investigation runs with LangSmith](#observability-tracing-investigation-runs-with-langsmith))
 
 Install Tesseract on macOS with Homebrew:
 
@@ -2385,6 +2392,93 @@ and confirmed unaffected: `"status": "final"`, `claim_type=fact`,
 for a well-evidenced factual claim - the new backstops do not spuriously
 flag a genuinely sufficient, on-topic citation for review.
 
+## Observability: tracing investigation runs with LangSmith
+
+Every earlier milestone in this project that surfaced a real bug (the
+auditor/directors voice confusion, the cross-fiscal-year citation leak, the
+spliced-quote citation, the HITL-bypass cases) was diagnosed by manually
+inspecting graph state or raw LLM output - there was no way to see, for a
+single real run, which node did what, what a synthesis call was actually
+given as evidence, or where a quote-verification retry fired, without adding
+temporary print statements. This closes that gap with
+[LangSmith](https://smith.langchain.com), the one item from the project
+brief's original day-by-day schedule (Day 13) not otherwise touched -
+latency/cost measurement and model comparison already happened via the
+baseline-comparison milestone above, but real tracing did not.
+
+Tracing is off by default and adds no new required dependency: `langsmith`
+was already present as a transitive dependency of `langgraph` (confirmed in
+`uv.lock` before this milestone started) and is now declared explicitly in
+`pyproject.toml` since it is imported directly. Three layers of visibility,
+each building on this project's existing structure rather than replacing
+any of it:
+
+1. **Graph structure, for free.** `investigation_agent.py`'s
+   `CompiledStateGraph` already runs on langchain-core's `Runnable`/callback
+   machinery, so every node (`generate_query`, `retrieve_evidence`,
+   `synthesize_finding`, `gather_year_findings`, `aggregate_findings`,
+   `human_review_gate`) automatically becomes a traced run - showing its
+   input/output state, including the generated query, retrieved page IDs,
+   the resulting `Finding`, and any `review_id` - the moment tracing is
+   enabled. No change to `_build_graph` was needed for this layer.
+2. **Per-LLM-call spans.** `llm_client.py`'s `ChatClient._request_completion`
+   - the single real network call every `complete*` method funnels through,
+   for both the investigation agent and `baseline_agent.py` - is wrapped
+   with `@traceable(run_type="llm")`. This nests one span per real model
+   call under its enclosing node, including the second call a
+   quote-verification retry makes and the previously-invisible
+   `_reclassify_claim_type` call, showing the exact messages sent and raw
+   response. `self` is automatically excluded from what LangSmith captures,
+   so no API key or client internals are ever sent as trace input.
+3. **Per-fiscal-year sub-spans.** `gather_year_findings_node`'s loop - one
+   isolated search-and-synthesize pass per named fiscal year - wraps each
+   iteration in its own `langsmith.trace()` span (`fiscal_year_{year}`), so
+   a multi-year question's decomposition shows as sibling spans instead of
+   one opaque node call containing a Python loop.
+
+### Configuration
+
+`Settings` gained `langsmith_tracing_enabled` (default `False`),
+`langsmith_api_key`, and `langsmith_project` (default `"company-researcher"`),
+documented in `.env.example`. This needed one small bridge: nothing in this
+codebase calls `load_dotenv()` - `.env` is only ever read through `Settings`
+via pydantic-settings - so a value set there is invisible to `langsmith`,
+which reads `LANGSMITH_TRACING`/`LANGSMITH_API_KEY`/`LANGSMITH_PROJECT`
+directly from `os.environ`. `cli.py`'s `_configure_langsmith_tracing`,
+called once at the top of `main()`, sets those three environment variables
+from `Settings` only when both `langsmith_tracing_enabled` is true and a key
+is present - a no-op otherwise, keeping `.env` the single place tracing is
+configured while still using LangSmith's own env-driven activation
+underneath.
+
+To use it: set `LANGSMITH_TRACING_ENABLED=true` and a real `LANGSMITH_API_KEY`
+(from <https://smith.langchain.com>) in `.env`, then run
+`company-researcher investigate ...` as normal. Traces appear in the
+configured LangSmith project.
+
+### How this composes with the existing token-usage accounting
+
+This does not change or duplicate `ChatUsage`, `_sum_usage`, or
+`investigate_with_usage()`. Those remain the deterministic, test-asserted
+token total that `compare-baseline` depends on. LangSmith is a
+complementary, visual, per-call inspector for a human debugging one specific
+run - not a new source of truth for cost, and this project does not attempt
+to route usage totals through LangSmith's own token/cost columns, to avoid
+maintaining two accounting paths for the same number.
+
+### Scope
+
+Tracing stays off by default, with no new CI gate - the same pattern
+`investigate`, `compare-baseline`, `calibrate-judge`, and `test-injection`
+already follow: a real-LLM-dependent capability that a developer opts into
+manually, not a required or automated gate. No new CLI command was added;
+tracing rides along on the existing commands transparently. Verifying that
+nested spans actually render correctly in the LangSmith UI - as opposed to
+the deterministic env-var bridging logic, which is unit-tested - needs a
+real LangSmith account and a real investigation run, the same manual,
+user-driven verification this project already relies on for every other
+real-LLM-dependent feature; it was not fabricated or assumed to work here.
+
 ## Project structure
 
 ```text
@@ -2400,7 +2494,7 @@ flag a genuinely sufficient, on-topic citation for review.
 │   ├── artifact_store.py               # Content-addressed source artifacts
 │   ├── baseline_agent.py               # No-retrieval general-LLM baseline
 │   ├── baseline_comparison.py          # Baseline-vs-specialized-agent comparison
-│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, investigation, review, calibration, comparison, and adversarial-testing CLI
+│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, investigation, review, calibration, comparison, and adversarial-testing CLI; bridges optional LangSmith tracing config
 │   ├── config.py                       # Environment-backed settings
 │   ├── discriminative_query.py         # Corpus document-frequency query ranking
 │   ├── document_ingestion.py           # Filing-document acquisition and persistence
@@ -2413,10 +2507,10 @@ flag a genuinely sufficient, on-topic citation for review.
 │   ├── human_review.py                 # Human-in-the-loop review gate and decision persistence
 │   ├── hybrid_search.py                # Reciprocal Rank Fusion of lexical and vector rankings
 │   ├── ingestion.py                    # Idempotent persistence of source data
-│   ├── investigation_agent.py          # LangGraph investigation agent and citation validation
+│   ├── investigation_agent.py          # LangGraph investigation agent, citation validation, and per-fiscal-year trace spans
 │   ├── judge_calibration.py            # LLM-judge-vs-human-label calibration harness
 │   ├── lexical_search.py               # PostgreSQL full-text page search
-│   ├── llm_client.py                   # Async client for the chat completions provider
+│   ├── llm_client.py                   # Async client for the chat completions provider, traced via LangSmith when enabled
 │   ├── main.py                         # FastAPI application factory
 │   ├── pdf_extraction.py               # Page-aware local PDF OCR
 │   ├── query_construction.py           # Deterministic stopword-removal query derivation

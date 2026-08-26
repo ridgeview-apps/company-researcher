@@ -5,6 +5,7 @@ from typing import Literal, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langsmith import trace
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -658,38 +659,53 @@ def _build_graph(
         query = state["generated_query"]
         year_evidence: list[YearEvidence] = []
         all_usage_records: list[ChatUsage] = []
+        # Each year gets its own LangSmith span (a no-op when tracing is off)
+        # so this loop's per-year decomposition - otherwise one opaque node
+        # call - is visible as sibling spans in a trace.
         for year in state["fiscal_year_range"]:
-            document_extraction_ids = await document_extraction_ids_for_fiscal_year(
-                session, year
-            )
-            matches = await search_pages(
-                session,
-                query,
-                limit=search_depth,
-                document_extraction_ids=document_extraction_ids,
-                company_number=state["company_number"],
-                as_of_date=state.get("as_of_date"),
-            )
-            pages = await _load_page_texts(session, matches[:context_pages])
-            evidence_text = _format_evidence_text(
-                pages,
-                empty_message="No evidence pages were retrieved for this fiscal year.",
-            )
-            user_message = (
-                f"Question: {question}\n\nFocus specifically on fiscal year {year}.\n\n"
-                f"Available evidence pages:\n\n{evidence_text}"
-            )
-            finding, usage_records = await _synthesize_and_validate(
-                chat_client, _FINDING_SYSTEM_PROMPT, user_message, pages
-            )
-            finding, integrity_usage = await _apply_review_integrity_checks(
-                session, chat_client, question, finding
-            )
-            all_usage_records.extend(usage_records)
-            all_usage_records.extend(integrity_usage)
-            year_evidence.append(
-                YearEvidence(fiscal_year=year, retrieved_pages=pages, finding=finding)
-            )
+            async with trace(
+                f"fiscal_year_{year}", run_type="chain", inputs={"fiscal_year": year}
+            ) as year_run:
+                document_extraction_ids = await document_extraction_ids_for_fiscal_year(
+                    session, year
+                )
+                matches = await search_pages(
+                    session,
+                    query,
+                    limit=search_depth,
+                    document_extraction_ids=document_extraction_ids,
+                    company_number=state["company_number"],
+                    as_of_date=state.get("as_of_date"),
+                )
+                pages = await _load_page_texts(session, matches[:context_pages])
+                evidence_text = _format_evidence_text(
+                    pages,
+                    empty_message="No evidence pages were retrieved for this fiscal year.",
+                )
+                user_message = (
+                    f"Question: {question}\n\nFocus specifically on fiscal year {year}.\n\n"
+                    f"Available evidence pages:\n\n{evidence_text}"
+                )
+                finding, usage_records = await _synthesize_and_validate(
+                    chat_client, _FINDING_SYSTEM_PROMPT, user_message, pages
+                )
+                finding, integrity_usage = await _apply_review_integrity_checks(
+                    session, chat_client, question, finding
+                )
+                all_usage_records.extend(usage_records)
+                all_usage_records.extend(integrity_usage)
+                year_evidence.append(
+                    YearEvidence(
+                        fiscal_year=year, retrieved_pages=pages, finding=finding
+                    )
+                )
+                year_run.end(
+                    outputs={
+                        "retrieved_page_count": len(pages),
+                        "claim": finding.claim,
+                        "evidence_sufficient": finding.evidence_sufficient,
+                    }
+                )
         return {
             "year_evidence": year_evidence,
             "usage_records": state.get("usage_records", []) + all_usage_records,

@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Sequence
 from datetime import date
@@ -847,8 +848,30 @@ def run_injection_test(dataset_path: str) -> str:
     return asyncio.run(test_injection_command(dataset_path))
 
 
+def _configure_langsmith_tracing(settings: Settings) -> None:
+    """Bridge `Settings`' LangSmith fields into the environment variables its SDK reads.
+
+    Nothing in this codebase calls `load_dotenv()` - `.env` is only ever read
+    through `Settings` (pydantic-settings), so a value set there is invisible
+    to `langsmith`/`langgraph`, which read `LANGSMITH_TRACING`/
+    `LANGSMITH_API_KEY`/`LANGSMITH_PROJECT` directly from `os.environ`. This
+    keeps `.env` the single place tracing is configured, matching every other
+    setting in this project, while still using LangSmith's own env-driven
+    activation underneath. A no-op, and thus safe to call unconditionally,
+    unless both tracing is explicitly enabled and a key is present - tracing
+    stays off by default, the same as every other real-LLM-dependent,
+    opt-in behaviour in this project.
+    """
+    if not settings.langsmith_tracing_enabled or settings.langsmith_api_key is None:
+        return
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key.get_secret_value()
+    os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Company Researcher command-line interface."""
+    _configure_langsmith_tracing(Settings())
     args = build_parser().parse_args(argv)
 
     try:

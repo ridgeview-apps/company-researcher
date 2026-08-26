@@ -35,3 +35,7 @@ class Settings(BaseSettings):
     openai_base_url: AnyHttpUrl = AnyHttpUrl("https://api.openai.com/v1")
     openai_embedding_model: str = "text-embedding-3-small"
     openai_chat_model: str = "gpt-4o-mini"
+
+    langsmith_tracing_enabled: bool = False
+    langsmith_api_key: SecretStr | None = None
+    langsmith_project: str = "company-researcher"

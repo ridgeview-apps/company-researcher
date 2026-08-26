@@ -4,6 +4,7 @@ from types import TracebackType
 from typing import Literal, Protocol, Self, TypeVar
 
 import httpx2
+from langsmith import traceable
 from pydantic import BaseModel, ValidationError
 
 from company_researcher.config import Settings
@@ -238,13 +239,24 @@ class ChatClient:
                 "Chat provider returned content that does not match the expected schema"
             ) from error
 
+    @traceable(run_type="llm", name="chat_completion")
     async def _request_completion(
         self,
         messages: Sequence[ChatMessage],
         *,
         response_format: dict[str, object] | None = None,
     ) -> tuple[str, ChatUsage | None]:
-        """Send one chat completion request and return the response text and usage."""
+        """Send one chat completion request and return the response text and usage.
+
+        `@traceable` is a no-op unless `LANGSMITH_TRACING`/`LANGSMITH_API_KEY`
+        are set in the process environment (see `cli.py`'s
+        `_configure_langsmith_tracing`, which bridges `Settings` into those
+        variables); when active, it reports this call - the messages sent,
+        the raw response, and latency - as its own span nested under
+        whichever LangGraph node invoked it, since `self` is automatically
+        excluded from the captured inputs and this is the sole real network
+        call every `complete*` method funnels through.
+        """
         if not messages:
             raise ValueError("messages must not be empty")
 
