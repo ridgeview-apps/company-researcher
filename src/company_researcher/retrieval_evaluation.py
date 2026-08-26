@@ -296,6 +296,7 @@ async def evaluate_question_by_embedding(
         model=model,
         dimensions=dimensions,
         limit=search_depth,
+        company_number=company_number,
     )
     retrieved = [(match.document_extraction_id, match.page_number) for match in matches]
     return _score_retrieved_pages(question.id, retrieved, relevant, k_values)
@@ -366,6 +367,7 @@ async def evaluate_question_hybrid(
         model=model,
         dimensions=dimensions,
         limit=search_depth,
+        company_number=company_number,
     )
     fused = reciprocal_rank_fusion(lexical_matches, vector_matches)
     retrieved = [(match.document_extraction_id, match.page_number) for match in fused]

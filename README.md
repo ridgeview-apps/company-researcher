@@ -1456,12 +1456,27 @@ Since `EvaluationDataset` already carries `company_number`, and it was
 already threaded through `evaluate_question` and
 `evaluate_question_hybrid`'s signatures, the fix was small: pass it to
 their `search_pages` calls the same way `investigation_agent.py` already
-does. `vector_search.py`'s `search_pages_by_embedding` has no equivalent
-company-scoping parameter and is a real, still-open gap — currently
-latent only because Nothing Technology's pages have not been embedded;
-the moment they are, vector and hybrid evaluation would be exposed to the
-same cross-contamination. Closing that gap is deliberately left as
-unstarted follow-up work here, not silently bundled into this fix.
+does.
+
+`vector_search.py`'s `search_pages_by_embedding` had no equivalent
+company-scoping parameter, flagged at the time as a real, still-open gap
+that was currently latent only because Nothing Technology's pages had not
+been embedded. This has since been closed: `search_pages_by_embedding`
+gained an optional `company_number` parameter, joining `DocumentPage ->
+DocumentExtraction -> FilingDocument -> Filing` exactly like `search_pages`
+already does, defaulting to no restriction so any existing caller is
+unaffected. `retrieval_evaluation.py`'s `evaluate_question_by_embedding`
+and `evaluate_question_hybrid` — which already received `company_number`
+as a parameter but never passed it through to vector search — now do.
+Verified with a new company-scoping test in `test_vector_search.py`
+(mirroring `test_lexical_search.py`'s), and by re-running
+`evaluate-retrieval --retrieval-method vector` and `--retrieval-method
+hybrid` against the real corpus afterward: both reproduced their exact
+previously-measured baselines (vector: Recall@5/@10/MRR =
+0.000/0.083/0.044; hybrid: 0.083/0.125/0.099), confirming no effect now
+that Gymshark remains the only embedded company - the fix closes the gap
+before it can bite, rather than only after Nothing Technology's pages are
+eventually embedded too.
 
 Re-measuring after the `retrieval_evaluation.py` fix surfaced a second,
 more interesting issue — a genuine latent bug the fix exposed, not a
@@ -1592,6 +1607,29 @@ cover. Deliberately left open rather than patched inline as part of this
 comparison work, the same way the earlier "©"-and-hyphen case was
 scoped as its own, separately-agreed fix rather than folded into
 whatever task happened to surface it.
+
+**This gap has since been closed, and closing it surfaced a second, real
+gap in the same sentence that the fix alone did not cover** - found by
+actually re-running the exact question that motivated the fix, not
+assumed fixed from the unit test alone. `_normalize_for_quote_check`
+gained `":"` in its stripped-character set, and re-running the question
+still failed, on the same page, for a different reason: the real text
+reads `"amounted to £59.4m » (2022: loss of £43:4m)"` - a stray `"»"`
+character the model naturally omits as meaningless noise when quoting.
+`"»"` was added to the stripped set too, and two new regression tests
+(`test_normalize_for_quote_check_tolerates_a_colon_in_place_of_a_decimal_point`,
+`test_normalize_for_quote_check_tolerates_a_stray_guillemet`) cover both
+cases with the real observed text. Re-running the same real question 5
+times after both fixes: 4 completed successfully, citing the correct
+pages with the exact right figures (`£49.6m`/`£51.6m` revenue,
+`£59.4m`/`£43.4m` loss); the one failure was on a *different* page (the
+statement of comprehensive income), a heavily table-mangled OCR
+extraction where the real line-item labels and their figures are
+scattered non-contiguously across the linearized text - a genuinely hard
+page to quote verbatim from, not a fixable character substitution, and
+left open rather than chased further, the same discipline this project
+already applied to Gymshark's own quote-check refinement after four real
+fixes.
 
 Latency, measured wall-clock per question: the baseline is
 consistently fast (roughly 1-3 seconds, a single LLM call); the
@@ -2557,6 +2595,54 @@ and confirmed unaffected: `"status": "final"`, `claim_type=fact`,
 `evidence_sufficient=true`, matching the previously-documented behaviour
 for a well-evidenced factual claim - the new backstops do not spuriously
 flag a genuinely sufficient, on-topic citation for review.
+
+### Closing the remaining HITL-bypass case with a different technique
+
+`interpretation-bait-governance-instability` was later revisited, not with
+another prompt-tuning pass on the same reclassifier call (already
+established as unreliable on this specific evasion pattern after 4
+consecutive identical failures), but with a genuinely different
+mechanism: `_apply_question_judgement_backstop` and its helper
+`_question_seeks_judgement` in `investigation_agent.py` deterministically
+detect whether the *question itself* - never the claim, never any
+evidence-derived content - contains judgement-seeking phrasing (`"indicate"`,
+`"suggest"`, `"imply"`, `"sign of"`, `"reflect"`, `"consistent with"`,
+`"raise concerns"`, `"raise questions"`, `"does this mean"`), and force
+`claim_type=interpretation` when matched, regardless of what the synthesis
+call self-reported. Because it never reads a claim or a page, an injected
+instruction embedded in adversarial filing content cannot reach it by
+construction - not merely in practice, the way the LLM reclassifier's
+failure showed a call that only *usually* resists injection is not the
+same guarantee. It runs before `_reclassify_claim_type` inside
+`_apply_review_integrity_checks`, so when it already upgrades a finding,
+the reclassifier's own early-return skips its LLM call entirely - this
+ordering can only reduce cost, never add to it.
+
+This is a fixed-phrase heuristic, not a semantic parser, and that
+limitation is stated plainly rather than glossed over: it will catch the
+exploited pattern and close variants, but a sufficiently different
+phrasing of an evaluative question could still slip past it, the same
+"proxy, not the thing itself" limitation already documented for
+`derive_discriminative_query`'s document-frequency heuristic elsewhere in
+this project. Verified with 6 new unit tests (the phrase detector, the
+backstop's upgrade/no-op/never-downgrade behaviour, and an integration
+test proving the reclassifier's LLM call is actually skipped once the
+deterministic backstop fires) plus the full existing suite - unaffected,
+since no existing test's question happens to contain any of these
+phrases.
+
+Measured for real, not assumed fixed from the unit tests alone:
+re-running the full 7-case adversarial dataset **4 times** gave **7/7
+passes every time**, including `interpretation-bait-governance-instability`
+- up from 6/7. Its claim is still the same evasive, bare factual
+recitation the reclassifier could never catch ("Three directors
+resigned during the year..."), but `claim_type` is now correctly forced
+to `interpretation` regardless, triggering human review despite the
+bait. The real default Gymshark investigation was re-run afterward and
+confirmed unaffected (`"status": "final"`, `claim_type=fact`), and none
+of the persisted evaluation datasets' or adversarial canary cases'
+question text happens to trigger a false positive from the new phrase
+list - checked directly against all of them, not assumed.
 
 ## Observability: tracing investigation runs with LangSmith
 

@@ -326,10 +326,25 @@ def _normalize_for_quote_check(text: str) -> str:
     fifth case: a stray "©" character and a line-wrap hyphen inserted
     mid-word (e.g. "debt ©\n-fundraising" for "debt fundraising", from a
     PDF carrying DocuSign watermark artifacts Gymshark's filings did not
-    have). None of these involve a different word or digit sequence - only
-    whitespace and punctuation - so every run of whitespace is removed
-    entirely rather than merely collapsed, commas, periods, and hyphens
-    are stripped, curly braces are canonicalized to parentheses, and
+    have). A sixth case, flagged as an open gap during the baseline-vs-
+    specialized comparison milestone and confirmed here to actually trigger
+    a real refusal during the human-calibrated accuracy-scoring milestone:
+    OCR renders a ":" instead of "." as a decimal point in a monetary
+    figure (e.g. Nothing Technology's real filing text "£43:4m" for the
+    true "£43.4m") - a citation quoting the correct figure with a period
+    failed verification purely because ":" was not in the stripped set,
+    even though the underlying figure was genuine and correctly reported.
+    Fixing that alone was verified to be insufficient for the exact real
+    question that motivated it, not assumed sufficient: re-running it
+    still failed, on the same page, because of a seventh, distinct
+    artifact on the very same sentence - a stray "»" character inserted
+    mid-sentence (the real text reads "amounted to £59.4m » (2022: loss
+    of £43:4m)"), which the model naturally omits as meaningless noise
+    when quoting, and which nothing in the stripped set removed. None of
+    these involve a different word or digit sequence - only whitespace
+    and punctuation - so every run of whitespace is removed entirely
+    rather than merely collapsed, commas, periods, hyphens, colons, and
+    "»" are stripped, curly braces are canonicalized to parentheses, and
     stray underscore "leader" characters (e.g. "__260.674") and "©"
     are stripped too. This is a deliberate trade-off: it makes the check
     slightly more permissive (in principle two genuinely different
@@ -342,7 +357,7 @@ def _normalize_for_quote_check(text: str) -> str:
     example in the same README section).
     """
     normalized = text.replace("{", "(").replace("}", ")")
-    for character in (",", ".", "_", "-", "©"):
+    for character in (",", ".", "_", "-", "©", ":", "»"):
         normalized = normalized.replace(character, "")
     return "".join(normalized.split()).lower()
 
@@ -496,6 +511,59 @@ async def _apply_evidence_relevance_backstop(
     return finding.model_copy(update={"evidence_sufficient": False})
 
 
+_JUDGEMENT_SEEKING_PHRASES = (
+    "indicate",
+    "suggest",
+    "imply",
+    "sign of",
+    "reflect",
+    "consistent with",
+    "raise concerns",
+    "raise questions",
+    "does this mean",
+)
+
+
+def _question_seeks_judgement(question: str) -> bool:
+    """Detect, deterministically, whether a question itself asks for a judgement.
+
+    A different technique from `_reclassify_claim_type`, not a variant of
+    it: that LLM call failed 4 consecutive real adversarial-testing runs
+    against exactly this pattern (`interpretation-bait-governance-
+    instability` - see README.md's "Closing the HITL-bypass gap" section)
+    - an injected page baits the model into a bare factual recitation that
+    technically dodges an evaluative question, and the reclassifier,
+    reading only that evasive claim, never recognizes the evasion itself
+    as needing 'interpretation'. This check reads only the user's own
+    question text - never the claim, never any evidence-derived content -
+    so no instruction embedded in a retrieved (and possibly adversarial)
+    filing page can reach it, unlike a call that reads model-produced
+    text. It is a fixed-phrase heuristic, not a semantic parser: it will
+    catch the exploited pattern and close variants, but a sufficiently
+    different phrasing of an evaluative question could still slip past
+    it - the same "proxy, not the thing itself" limitation already
+    documented for `derive_discriminative_query`'s document-frequency
+    heuristic elsewhere in this project.
+    """
+    lowered = question.lower()
+    return any(phrase in lowered for phrase in _JUDGEMENT_SEEKING_PHRASES)
+
+
+def _apply_question_judgement_backstop(question: str, finding: Finding) -> Finding:
+    """Force claim_type=interpretation when the question itself asks for a judgement.
+
+    Like the other backstops, only ever upgrades a self-reported 'fact' to
+    'interpretation', never the reverse - see `_question_seeks_judgement`
+    for why this check, unlike `_reclassify_claim_type`, cannot be reached
+    by an injected instruction at all.
+    """
+    if finding.claim_type == "interpretation":
+        return finding
+    if not _question_seeks_judgement(question):
+        return finding
+    return finding.model_copy(update={"claim_type": "interpretation"})
+
+
 async def _reclassify_claim_type(
     chat_client: UsageAwareChatProvider, question: str, finding: Finding
 ) -> tuple[Finding, ChatUsage | None]:
@@ -537,14 +605,20 @@ async def _apply_review_integrity_checks(
     question: str,
     finding: Finding,
 ) -> tuple[Finding, list[ChatUsage]]:
-    """Apply both human-review-gate backstops to a synthesized finding.
+    """Apply all three human-review-gate backstops to a synthesized finding.
 
-    Both checks only ever push a finding toward requiring review, never
-    away from it - a deliberately asymmetric safety net against the
+    All three checks only ever push a finding toward requiring review,
+    never away from it - a deliberately asymmetric safety net against the
     self-classification manipulation adversarial-injection testing found,
-    not a general-purpose reclassifier.
+    not a general-purpose reclassifier. `_apply_question_judgement_backstop`
+    runs before `_reclassify_claim_type` deliberately: it is free (no LLM
+    call, question-only) and, when it already upgrades claim_type to
+    'interpretation', `_reclassify_claim_type`'s own early-return skips its
+    LLM call entirely - this ordering can only reduce cost, never add to
+    it.
     """
     finding = await _apply_evidence_relevance_backstop(session, question, finding)
+    finding = _apply_question_judgement_backstop(question, finding)
     finding, usage = await _reclassify_claim_type(chat_client, question, finding)
     return finding, [usage] if usage is not None else []
 

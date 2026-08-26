@@ -24,8 +24,11 @@ from company_researcher.investigation_agent import (
     Finding,
     InvestigationAgentError,
     _apply_evidence_relevance_backstop,
+    _apply_question_judgement_backstop,
+    _apply_review_integrity_checks,
     _force_unambiguous_fiscal_year,
     _normalize_for_quote_check,
+    _question_seeks_judgement,
     _reclassify_claim_type,
     investigate,
     investigate_with_review,
@@ -216,6 +219,20 @@ def test_normalize_for_quote_check_still_distinguishes_different_numbers() -> No
     )
 
 
+def test_normalize_for_quote_check_tolerates_a_colon_in_place_of_a_decimal_point() -> (
+    None
+):
+    """Regression test for a real observed failure on Nothing Technology's corpus: OCR renders a ':' instead of '.' as a monetary decimal point (e.g. "£43:4m" for "£43.4m"), which caused a real citation quoting the correct figure to fail verification."""
+    assert _normalize_for_quote_check("£43.4m") == _normalize_for_quote_check("£43:4m")
+
+
+def test_normalize_for_quote_check_tolerates_a_stray_guillemet() -> None:
+    """Regression test for a real observed failure on Nothing Technology's corpus: the real page reads "amounted to £59.4m » (2022: loss of £43:4m)", where OCR inserts a stray '»' character the model naturally omits as meaningless noise when quoting - confirmed by re-running the exact question that motivated the colon fix above and finding it still failed on this same sentence for this separate reason."""
+    page = "The loss for the period, after taxation, amounted to £59.4m » (2022: loss of £43:4m)."
+    quote = "The loss for the period, after taxation, amounted to £59.4m (2022: loss of £43.4m)."
+    assert _normalize_for_quote_check(quote) in _normalize_for_quote_check(page)
+
+
 def test_normalize_for_quote_check_tolerates_a_stray_symbol_at_a_linewrap_hyphen() -> (
     None
 ):
@@ -402,6 +419,104 @@ async def test_apply_evidence_relevance_backstop_never_upgrades_already_insuffic
     )
 
     assert result.evidence_sufficient is False
+
+
+def test_question_seeks_judgement_detects_the_exploited_pattern() -> None:
+    """Regression test for the real, previously-failing adversarial case
+    (`interpretation-bait-governance-instability`): the reclassifier LLM
+    call failed 4 consecutive real runs to recognize this question as
+    seeking a judgement, because the injected claim it read was an
+    evasive-but-technically-correct factual recitation. This check reads
+    only the question, never the claim, so it does not depend on the
+    claim's own wording at all.
+    """
+    assert _question_seeks_judgement(
+        "Do the resignations disclosed in this filing indicate governance instability?"
+    )
+
+
+def test_question_seeks_judgement_is_false_for_an_ordinary_factual_question() -> None:
+    assert not _question_seeks_judgement("What was Gymshark's turnover in FY2023?")
+
+
+@pytest.mark.asyncio
+async def test_apply_question_judgement_backstop_upgrades_a_judgement_seeking_question() -> (
+    None
+):
+    finding = Finding(
+        claim="The following directors resigned during the year: J Smith, R Patel.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[],
+    )
+
+    result = _apply_question_judgement_backstop(
+        "Do the resignations disclosed in this filing indicate governance instability?",
+        finding,
+    )
+
+    assert result.claim_type == "interpretation"
+    assert result.claim == finding.claim
+
+
+def test_apply_question_judgement_backstop_leaves_an_ordinary_fact_unchanged() -> None:
+    finding = Finding(
+        claim="Turnover was £490,142k.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[],
+    )
+
+    result = _apply_question_judgement_backstop(
+        "What was Gymshark's turnover in FY2023?", finding
+    )
+
+    assert result is finding
+
+
+def test_apply_question_judgement_backstop_never_downgrades_an_interpretation() -> None:
+    finding = Finding(
+        claim="This indicates governance instability.",
+        claim_type="interpretation",
+        evidence_sufficient=True,
+        citations=[],
+    )
+
+    result = _apply_question_judgement_backstop(
+        "What was Gymshark's turnover in FY2023?", finding
+    )
+
+    assert result is finding
+
+
+@pytest.mark.asyncio
+async def test_apply_review_integrity_checks_skips_the_reclassifier_call_once_the_deterministic_backstop_already_upgraded(
+    session: AsyncSession,
+) -> None:
+    """The deterministic question-judgement backstop runs before the LLM
+    reclassifier, so when it already upgrades claim_type to
+    'interpretation', `_reclassify_claim_type`'s own early-return means no
+    LLM call happens at all - this ordering can only reduce cost, never
+    add to it.
+    """
+    finding = Finding(
+        claim="The following directors resigned during the year: J Smith, R Patel.",
+        claim_type="fact",
+        evidence_sufficient=True,
+        citations=[],
+    )
+    chat_client = FakeChatClient(query="unused", finding=finding)
+
+    result, usage_records = await _apply_review_integrity_checks(
+        session,
+        chat_client,
+        "Do the resignations disclosed in this filing indicate governance instability?",
+        finding,
+    )
+
+    assert result.claim_type == "interpretation"
+    assert usage_records == []
+    assert len(chat_client.complete_structured_calls) == 0
 
 
 @pytest.mark.asyncio
