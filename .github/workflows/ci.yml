@@ -50,8 +50,18 @@ jobs:
       - name: Check formatting
         run: uv run ruff format --check .
 
-      - name: Type check
+      - name: Type check (mypy)
         run: uv run mypy
+
+      # A second, independent type checker, not a duplicate of mypy: mypy
+      # and pyright are separate implementations that disagree on some
+      # checks (see the `[tool.pyright]` comment in pyproject.toml), and
+      # pyright is also what VS Code's bundled Pylance extension runs
+      # locally by default. Running both here means whatever the IDE flags
+      # locally is also enforced in CI, and vice versa, rather than the two
+      # silently disagreeing.
+      - name: Type check (pyright)
+        run: uv run pyright
 
       # `real_corpus`-marked tests need the real, manually-ingested Gymshark/
       # Nothing Technology corpus (real Companies House filings, actually

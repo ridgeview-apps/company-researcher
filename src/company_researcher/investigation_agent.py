@@ -205,8 +205,36 @@ class YearEvidence(BaseModel):
     finding: Finding
 
 
-class InvestigationState(TypedDict, total=False):
-    """LangGraph state threaded through the investigation graph."""
+class InvestigationInput(TypedDict):
+    """The three fields actually supplied to `graph.ainvoke()` at the start of a run.
+
+    A separate, narrower type from `InvestigationState` - passed to
+    `StateGraph` as its `input_schema` - so `InvestigationState` itself can
+    require every field (see below) without making the initial invoke call,
+    which only ever supplies these three, fail to type-check.
+    """
+
+    question: str
+    company_number: str
+    as_of_date: date | None
+
+
+class InvestigationState(TypedDict):
+    """LangGraph state threaded through the investigation graph.
+
+    Every field is required, even though any single node only ever returns
+    a partial update: LangGraph merges each node's returned dict into this
+    state rather than requiring it to return the whole shape, so node
+    functions are annotated to return `dict[str, object]`, not
+    `InvestigationState`, and are trusted (per the graph's own edge
+    ordering, not verified by the type checker) to populate a field before
+    any downstream node reads it - e.g. `retrieved_pages` is always set by
+    `retrieve_evidence_node` before `synthesize_finding_node` reads it.
+    Making every field required, rather than the previous `total=False`,
+    lets every node's direct `state["some_key"]` read type-check honestly
+    instead of triggering a spurious "key might not exist" warning at every
+    read site in the file.
+    """
 
     question: str
     company_number: str
@@ -563,7 +591,7 @@ def _build_graph(
     search_depth: int,
     context_pages: int,
 ) -> CompiledStateGraph[
-    InvestigationState, None, InvestigationState, InvestigationState
+    InvestigationState, None, InvestigationInput, InvestigationState
 ]:
     """Assemble the investigation graph.
 
@@ -576,7 +604,7 @@ def _build_graph(
     another's in a single shared context window.
     """
 
-    async def generate_query_node(state: InvestigationState) -> InvestigationState:
+    async def generate_query_node(state: InvestigationState) -> dict[str, object]:
         query, usage = await chat_client.complete_with_usage(
             [
                 ChatMessage(role="system", content=_QUERY_SYSTEM_PROMPT),
@@ -593,7 +621,7 @@ def _build_graph(
             "usage_records": [usage] if usage is not None else [],
         }
 
-    async def retrieve_evidence_node(state: InvestigationState) -> InvestigationState:
+    async def retrieve_evidence_node(state: InvestigationState) -> dict[str, object]:
         fiscal_year = state.get("fiscal_year")
         document_extraction_ids = None
         if fiscal_year is not None:
@@ -633,7 +661,7 @@ def _build_graph(
         pages = await _load_page_texts(session, matches[:context_pages])
         return {"retrieved_pages": pages}
 
-    async def synthesize_finding_node(state: InvestigationState) -> InvestigationState:
+    async def synthesize_finding_node(state: InvestigationState) -> dict[str, object]:
         pages = state["retrieved_pages"]
         evidence_text = _format_evidence_text(
             pages, empty_message="No evidence pages were retrieved for this question."
@@ -654,7 +682,7 @@ def _build_graph(
 
     async def gather_year_findings_node(
         state: InvestigationState,
-    ) -> InvestigationState:
+    ) -> dict[str, object]:
         question = state["question"]
         query = state["generated_query"]
         year_evidence: list[YearEvidence] = []
@@ -711,7 +739,7 @@ def _build_graph(
             "usage_records": state.get("usage_records", []) + all_usage_records,
         }
 
-    async def aggregate_findings_node(state: InvestigationState) -> InvestigationState:
+    async def aggregate_findings_node(state: InvestigationState) -> dict[str, object]:
         year_evidence = state["year_evidence"]
         summary = _format_year_findings_summary(year_evidence)
         user_message = (
@@ -733,7 +761,7 @@ def _build_graph(
             + integrity_usage,
         }
 
-    async def human_review_gate_node(state: InvestigationState) -> InvestigationState:
+    async def human_review_gate_node(state: InvestigationState) -> dict[str, object]:
         finding = state["finding"]
         if not needs_human_review(
             claim_type=finding.claim_type,
@@ -752,7 +780,7 @@ def _build_graph(
         )
         return {"review_id": review_id}
 
-    graph = StateGraph(InvestigationState)
+    graph = StateGraph(InvestigationState, input_schema=InvestigationInput)
     graph.add_node("generate_query", generate_query_node)
     graph.add_node("retrieve_evidence", retrieve_evidence_node)
     graph.add_node("synthesize_finding", synthesize_finding_node)

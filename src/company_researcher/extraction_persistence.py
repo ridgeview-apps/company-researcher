@@ -116,16 +116,18 @@ async def extract_filing_document(
         for page in result.pages
     ]
     session.add_all(pages)
+    page_count = len(pages)
+    total_character_count = sum(page.character_count for page in pages)
     extraction.status = "succeeded"
-    extraction.page_count = len(pages)
-    extraction.total_character_count = sum(page.character_count for page in pages)
+    extraction.page_count = page_count
+    extraction.total_character_count = total_character_count
     extraction.completed_at = datetime.now(UTC)
     extraction.error_message = None
     await session.commit()
 
     return ExtractionPersistenceResult(
         document_extraction_id=extraction.id,
-        page_count=extraction.page_count,
-        total_character_count=extraction.total_character_count,
+        page_count=page_count,
+        total_character_count=total_character_count,
         outcome=outcome,
     )

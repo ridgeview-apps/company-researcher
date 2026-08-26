@@ -111,14 +111,15 @@ async def embed_document_extraction(
         for page, vector in zip(pages, vectors, strict=True)
     ]
     session.add_all(page_embeddings)
+    page_count = len(page_embeddings)
     document_embedding.status = "succeeded"
-    document_embedding.page_count = len(page_embeddings)
+    document_embedding.page_count = page_count
     document_embedding.completed_at = datetime.now(UTC)
     document_embedding.error_message = None
     await session.commit()
 
     return EmbeddingPersistenceResult(
         document_embedding_id=document_embedding.id,
-        page_count=document_embedding.page_count,
+        page_count=page_count,
         outcome=outcome,
     )

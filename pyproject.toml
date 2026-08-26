@@ -50,9 +50,23 @@ files = ["src", "tests"]
 python_version = "3.13"
 strict = true
 
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.13"
+# Several dependencies (e.g. pypdfium2) ship no py.typed marker and no type
+# stubs. mypy already treats such imports as untyped/Any by default; without
+# this, pyright instead infers types from their unannotated source (e.g.
+# guessing `int` from a `scale=1` default whose real, documented type is
+# `float`), producing false positives mypy never raises. Disabling this
+# makes pyright fall back the same way mypy already does for genuinely
+# untyped dependencies, rather than one checker guessing where the other
+# abstains.
+useLibraryCodeForTypes = false
+
 [dependency-groups]
 dev = [
     "mypy>=2.3.1",
+    "pyright>=1.1.411",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.3",

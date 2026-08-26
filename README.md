@@ -2042,7 +2042,14 @@ Run strict static type checking:
 
 ```bash
 uv run mypy
+uv run pyright
 ```
+
+`pyright` is the second, independent type checker required alongside
+`mypy` (see [A second type checker: pyright, alongside
+mypy](#a-second-type-checker-pyright-alongside-mypy) below for why); it's
+also the engine behind VS Code's bundled Pylance extension, so a clean
+`uv run pyright` locally should match a clean Problems tab in the editor.
 
 To apply Ruff's formatter after editing Python files:
 
@@ -2073,6 +2080,58 @@ treated a "real run" against the real LLM and persisted corpus as a
 deliberate, manual, documented act (see every milestone's account
 throughout this file), not an automated gate that fires on every commit;
 this is a continuation of that choice, not a new one made for CI's sake.
+
+### A second type checker: pyright, alongside mypy
+
+Prompted by real, observed IDE noise, not a scheduled milestone: VS Code's
+bundled Pylance extension (built on `pyright`, an independent implementation
+of Python's typing spec from `mypy`) flagged 22 warnings in
+`investigation_agent.py` that `mypy` - this project's only configured type
+checker until now - never raised, all `reportTypedDictNotRequiredAccess`.
+`InvestigationState`, the LangGraph state `TypedDict`, was declared
+`total=False` so that each node's partial-update return dict would
+type-check against a return annotation of the same full type - which also
+meant every ordinary `state["some_key"]` read elsewhere in the file looked,
+to pyright, like it might raise a `KeyError`. Checked case by case rather
+than assumed: every direct read in the file is genuinely guaranteed present
+at that point by the graph's own edge ordering (e.g. `retrieved_pages` is
+always set by `retrieve_evidence_node` before `synthesize_finding_node`
+reads it). This was fixed properly rather than suppressed: a new
+`InvestigationInput` TypedDict (just the three fields `graph.ainvoke()`
+actually receives) became `StateGraph`'s `input_schema`, `InvestigationState`
+dropped `total=False` (every field now required, matching the real
+per-path guarantees just verified), and each node's return type changed
+from the dishonest `-> InvestigationState` to `-> dict[str, object]`, since
+a node only ever returns a partial update. Verified before and after with
+`npx pyright`/`uv run pyright` directly (not just trusting the IDE): 22
+errors reproduced, then 0 remaining, with `mypy`, the formatter, the linter,
+the full test suite, and a real `investigate` run against the real corpus
+all unaffected.
+
+Running the same check across the *entire* codebase (not just that one
+file) surfaced only 4 more pre-existing issues, all `reportArgumentType`:
+two were the identical shape (`extraction.page_count`/
+`document_embedding.page_count`, `Mapped[int | None]` SQLAlchemy columns
+read back immediately after being assigned a concrete `int` two lines
+above) and were fixed the same way, by using the already-computed local
+variable instead of re-reading the nullable ORM attribute. The fourth,
+`pdf_extraction.py`'s call to `pypdfium2`'s `PdfPage.render(scale=...)`, was
+confirmed to be a genuine pyright false positive rather than a bug: checked
+directly against the installed package, `pypdfium2` ships no `py.typed`
+marker and `render`'s `scale` parameter has no type annotation at all in
+its source (just an untyped `scale=1` default, documented as `float` in its
+own docstring) - `mypy` treats an unmarked, untyped import as `Any` and
+never flags it, while pyright still infers a type from the untyped default
+and infers it wrong. `[tool.pyright]`'s `useLibraryCodeForTypes = false` in
+`pyproject.toml` makes pyright fall back the same way `mypy` already does
+for genuinely untyped dependencies, rather than one checker guessing where
+the other abstains - a systemic alignment, not a one-off suppression, and
+confirmed afterward to still report a clean 0 errors project-wide.
+
+`.github/workflows/ci.yml` now runs `uv run pyright` as its own step
+alongside `uv run mypy`, so whatever Pylance flags locally by default is
+now also enforced in CI, and vice versa, instead of the two silently
+disagreeing the way they did before this was noticed.
 
 ## Adversarial / prompt-injection testing
 
