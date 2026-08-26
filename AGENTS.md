@@ -821,6 +821,92 @@ against the real LLM and persisted corpus as a manual, documented act, not
 an automated gate. Adversarial/prompt-injection testing remains the other
 concrete gap, deliberately not started in this slice.
 
+An adversarial / prompt-injection testing milestone is now built and
+measured, the explicitly agreed next step after CI above, chosen deliberately
+over several other open options (a fuller baseline comparison, further
+LLM-judge calibration, ingesting a third company, reranking,
+observability/tracing). Reading `investigation_agent.py`, `lexical_search.py`,
+and `human_review.py` first (not assumed) showed the pipeline's guardrails
+are not equally protected against a manipulated model: citation existence
+(`_validate_citations`) and company/fiscal-year/as-of scoping are pure
+Python/SQL checks the model's own output cannot reach; quote verification
+(`_find_quote_mismatches`) checks fidelity to real page text, not
+truthfulness, by its own documented design; and `claim_type`/
+`evidence_sufficient` - the two signals `needs_human_review` gates on - are
+entirely LLM self-classified with no deterministic check at all, the same
+category of "LLM self-assessment on a subtle axis" the reverted
+citation-entailment-judge attempt already found unreliable, except here a
+bad self-classification can skip human review entirely rather than just
+misjudge evidence.
+
+Two tiers were built, following this project's usual split between
+deterministic checks and manual real-LLM verification. First,
+`test_adversarial_injection.py` (7 tests, deterministic, no LLM call, runs in
+CI) uses the same `FakeChatClient` pattern as `test_investigation_agent.py`
+to simulate outputs a successfully injected model might produce, confirming
+a fabricated citation is rejected even if baited, a citation to a real but
+unretrieved page is rejected, an injected instruction quoted verbatim from a
+real page passes quote verification (a known, now explicitly asserted gap
+rather than an implicit assumption), and `search_pages` survives
+SQL-meta-character, tsquery-breaking, and punctuation-only query strings
+without erroring or leaking rows across a company boundary - the last
+confirmed directly against real PostgreSQL with `psql` before writing the
+test (`plainto_tsquery` lexemizes everything, including SQL syntax, before
+`to_tsquery` ever sees it), not assumed safe.
+
+Second, `adversarial_injection.py` and the new `test-injection` CLI command
+run a hand-built, 7-case dataset
+(`evaluation/adversarial_injection_cases.json`) against the real LLM, the
+same manual, documented-real-run pattern as `calibrate-judge`/
+`compare-baseline`, deliberately outside CI for the same reason. Each case
+seeds its own synthetic filing chain directly under a dedicated fake company
+number (real Companies House filings cannot contain injection payloads, so
+synthetic fixture data is the only honest option), then deletes it
+afterward. Scoring is deterministic, not an LLM judge: each case's author
+already knows what a "compromised" output looks like (a canary string, or a
+self-classification flip), so this is a plain string/field check, matching
+this project's preference for determinism and its own prior bad experience
+with LLM self-assessment on a subtle axis.
+
+A scoring flaw in the harness itself was caught and fixed before any result
+was published, not after: `direct-override-going-concern`'s first version
+used a canary marker prepended as a detachable label, and a worked-example
+walkthrough of the harness surfaced that its real response had echoed the
+injected payload's forced conclusion almost verbatim while omitting only
+the label - a genuine injection success the check was blind to, since an
+arbitrary prepended tag is exactly what a paraphrasing model would drop
+while still adopting the substance. Fixed by tying the canary to a specific
+fabricated detail woven into the required conclusion itself (an invented
+reference number the injected text demands be cited), the same pattern
+`authoritative-directive-dividend-claim`'s fabricated figure already used
+successfully - and re-verified for real afterward, not assumed fixed.
+
+Measured result, run for real against the real LLM after that fix: 4/7
+passed. All 4 `canary` cases (direct instruction override, fake-delimiter
+system-prompt leak, an authoritative-sounding editorial correction
+superseding a real nil-dividend disclosure, and a roleplay/persona
+jailbreak) resisted the injection outright - the model answered from
+genuine page content and never echoed the injected instruction into its
+claim. All 3 `hitl_bypass` cases
+failed - the human-review gate was bypassed in every one. This was verified
+as a genuine causal effect of the injected text, not a scoring-methodology
+artifact: a one-off control script (not committed) re-ran the same three
+questions against the same pages with the injected bracket removed, and all
+three then correctly triggered review (`claim_type=interpretation` and/or
+`evidence_sufficient=False`); with the injected bracket present, all three
+instead returned `claim_type=fact, evidence_sufficient=True` and skipped
+review. One case's baited and control claims were nearly identical prose -
+the injection changed only the metadata flag governing whether a human ever
+sees the finding, not what the model actually said - exactly the failure
+mode this milestone set out to look for. This is recorded as a genuine,
+currently unresolved limitation, the same way every other negative result in
+this project is: closing it would need either an independent check on
+`claim_type`/`evidence_sufficient` (which is the LLM-judge-on-a-subtle-axis
+approach already found unreliable once) or a structural change to how those
+fields are produced - both left as open, deliberately unstarted follow-up
+work. See README.md's "Adversarial / prompt-injection testing" section for
+the full detail, case descriptions, and measured table.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or

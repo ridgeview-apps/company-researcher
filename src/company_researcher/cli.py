@@ -8,6 +8,11 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from company_researcher.adversarial_injection import (
+    AdversarialInjectionError,
+    load_injection_dataset,
+    run_injection_dataset,
+)
 from company_researcher.artifact_store import ArtifactStoreError, LocalArtifactStore
 from company_researcher.baseline_comparison import QuestionComparison, run_comparison
 from company_researcher.companies_house import (
@@ -68,6 +73,7 @@ from company_researcher.retrieval_evaluation import (
 )
 
 DEFAULT_EVALUATION_DATASET = "evaluation/gymshark_retrieval_questions.json"
+DEFAULT_ADVERSARIAL_DATASET = "evaluation/adversarial_injection_cases.json"
 DEFAULT_INVESTIGATION_QUESTION = (
     "What did the directors identify as Gymshark's going-concern position "
     "in the FY2023 accounts, and does the evidence support that?"
@@ -299,6 +305,22 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=DEFAULT_EVALUATION_DATASET,
         help=f"Path to an evaluation dataset (default: {DEFAULT_EVALUATION_DATASET}).",
+    )
+
+    injection_parser = subparsers.add_parser(
+        "test-injection",
+        help=(
+            "Run the investigation agent against a hand-built set of "
+            "prompt-injection cases over synthetic filing pages, scoring "
+            "each case deterministically. Offline adversarial evaluation "
+            "only - does not change investigate's live guardrails."
+        ),
+    )
+    injection_parser.add_argument(
+        "dataset_path",
+        nargs="?",
+        default=DEFAULT_ADVERSARIAL_DATASET,
+        help=f"Path to an adversarial dataset (default: {DEFAULT_ADVERSARIAL_DATASET}).",
     )
 
     return parser
@@ -788,6 +810,43 @@ def run_baseline_comparison(dataset_path: str) -> str:
     return asyncio.run(compare_baseline_command(dataset_path))
 
 
+async def test_injection_command(dataset_path: str) -> str:
+    """Run every adversarial case in a dataset against a real chat client."""
+    dataset = load_injection_dataset(Path(dataset_path))
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            async with ChatClient.from_settings(settings) as chat_client:
+                results = await run_injection_dataset(session, chat_client, dataset)
+    finally:
+        await engine.dispose()
+
+    lines = []
+    for result in results:
+        mark = "PASS" if result.passed else "FAIL"
+        lines.append(
+            f"{result.case_id} [{result.case_type}] [{mark}]: {result.description}"
+        )
+        lines.append(f"    {result.detail}")
+        if result.claim is not None:
+            lines.append(f"    claim: {result.claim}")
+            lines.append(
+                f"    claim_type={result.claim_type} "
+                f"evidence_sufficient={result.evidence_sufficient}"
+            )
+
+    passed = sum(1 for result in results if result.passed)
+    lines.append(f"{passed}/{len(results)} case(s) passed.")
+    return "\n".join(lines)
+
+
+def run_injection_test(dataset_path: str) -> str:
+    """Run one adversarial injection dataset from the synchronous CLI."""
+    return asyncio.run(test_injection_command(dataset_path))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Company Researcher command-line interface."""
     args = build_parser().parse_args(argv)
@@ -823,6 +882,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = run_judge_calibration(args.dataset_path)
         elif args.command == "compare-baseline":
             output = run_baseline_comparison(args.dataset_path)
+        elif args.command == "test-injection":
+            output = run_injection_test(args.dataset_path)
         else:
             output = run_inspection(args.company_number)
     except CompaniesHouseConfigurationError as error:
@@ -864,6 +925,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except JudgeCalibrationError as error:
         print(f"Judge calibration error: {error}", file=sys.stderr)
+        return 1
+    except AdversarialInjectionError as error:
+        print(f"Adversarial injection error: {error}", file=sys.stderr)
         return 1
 
     print(output)
