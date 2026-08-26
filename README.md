@@ -2439,22 +2439,40 @@ any of it:
 ### Configuration
 
 `Settings` gained `langsmith_tracing_enabled` (default `False`),
-`langsmith_api_key`, and `langsmith_project` (default `"company-researcher"`),
-documented in `.env.example`. This needed one small bridge: nothing in this
-codebase calls `load_dotenv()` - `.env` is only ever read through `Settings`
-via pydantic-settings - so a value set there is invisible to `langsmith`,
-which reads `LANGSMITH_TRACING`/`LANGSMITH_API_KEY`/`LANGSMITH_PROJECT`
-directly from `os.environ`. `cli.py`'s `_configure_langsmith_tracing`,
-called once at the top of `main()`, sets those three environment variables
-from `Settings` only when both `langsmith_tracing_enabled` is true and a key
-is present - a no-op otherwise, keeping `.env` the single place tracing is
-configured while still using LangSmith's own env-driven activation
-underneath.
+`langsmith_api_key`, `langsmith_project` (default `"company-researcher"`),
+and `langsmith_endpoint` (default LangSmith's US API,
+`https://api.smith.langchain.com`), documented in `.env.example`. This needed
+one small bridge: nothing in this codebase calls `load_dotenv()` - `.env` is
+only ever read through `Settings` via pydantic-settings - so a value set
+there is invisible to `langsmith`, which reads
+`LANGSMITH_TRACING`/`LANGSMITH_API_KEY`/`LANGSMITH_PROJECT`/
+`LANGSMITH_ENDPOINT` directly from `os.environ`. `cli.py`'s
+`_configure_langsmith_tracing`, called once at the top of `main()`, sets
+those four environment variables from `Settings` only when both
+`langsmith_tracing_enabled` is true and a key is present - a no-op
+otherwise, keeping `.env` the single place tracing is configured while
+still using LangSmith's own env-driven activation underneath.
 
 To use it: set `LANGSMITH_TRACING_ENABLED=true` and a real `LANGSMITH_API_KEY`
 (from <https://smith.langchain.com>) in `.env`, then run
 `company-researcher investigate ...` as normal. Traces appear in the
 configured LangSmith project.
+
+**A real-account gap found during manual verification, not assumed:** a
+first real run against a LangSmith account on its EU region (its web UI at
+`eu.smith.langchain.com`, not `smith.langchain.com`) failed every call with
+a bare `403 Client Error: Forbidden` and no further detail, reproduced with
+a minimal standalone script that called `langsmith.Client().list_projects()`
+directly, bypassing this project's code entirely - confirming the key
+itself was valid and the failure was a region mismatch, not a bug in the
+env-bridging logic. LangSmith's US and EU deployments are separate
+services with separate auth, and the SDK's default API URL is the US one
+regardless of which region an account was created in. `langsmith_endpoint`
+closes this: set `LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com` in
+`.env` for an EU-region account. Re-running the same standalone script
+against the EU endpoint with the same key succeeded before this was wired
+into `_configure_langsmith_tracing`, confirming the fix before it was
+built into the CLI path.
 
 ### How this composes with the existing token-usage accounting
 

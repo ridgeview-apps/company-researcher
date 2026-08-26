@@ -39,3 +39,4 @@ class Settings(BaseSettings):
     langsmith_tracing_enabled: bool = False
     langsmith_api_key: SecretStr | None = None
     langsmith_project: str = "company-researcher"
+    langsmith_endpoint: AnyHttpUrl = AnyHttpUrl("https://api.smith.langchain.com")

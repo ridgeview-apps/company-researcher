@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic import SecretStr
+from pydantic import AnyHttpUrl, SecretStr
 
 from company_researcher import cli
 from company_researcher.companies_house.exceptions import (
@@ -35,7 +35,12 @@ from company_researcher.investigation_agent import (
 from company_researcher.llm_client import ChatError
 from company_researcher.pdf_extraction import PdfExtractionError
 
-_LANGSMITH_ENV_VARS = ("LANGSMITH_TRACING", "LANGSMITH_API_KEY", "LANGSMITH_PROJECT")
+_LANGSMITH_ENV_VARS = (
+    "LANGSMITH_TRACING",
+    "LANGSMITH_API_KEY",
+    "LANGSMITH_PROJECT",
+    "LANGSMITH_ENDPOINT",
+)
 
 
 def test_configure_langsmith_tracing_sets_environment_when_enabled(
@@ -47,6 +52,7 @@ def test_configure_langsmith_tracing_sets_environment_when_enabled(
         langsmith_tracing_enabled=True,
         langsmith_api_key=SecretStr("test-langsmith-key"),
         langsmith_project="test-project",
+        langsmith_endpoint=AnyHttpUrl("https://eu.api.smith.langchain.com"),
     )
 
     cli._configure_langsmith_tracing(settings)
@@ -54,6 +60,7 @@ def test_configure_langsmith_tracing_sets_environment_when_enabled(
     assert os.environ["LANGSMITH_TRACING"] == "true"
     assert os.environ["LANGSMITH_API_KEY"] == "test-langsmith-key"
     assert os.environ["LANGSMITH_PROJECT"] == "test-project"
+    assert os.environ["LANGSMITH_ENDPOINT"] == "https://eu.api.smith.langchain.com/"
 
 
 def test_configure_langsmith_tracing_is_a_noop_when_disabled(

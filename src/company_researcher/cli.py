@@ -854,10 +854,15 @@ def _configure_langsmith_tracing(settings: Settings) -> None:
     Nothing in this codebase calls `load_dotenv()` - `.env` is only ever read
     through `Settings` (pydantic-settings), so a value set there is invisible
     to `langsmith`/`langgraph`, which read `LANGSMITH_TRACING`/
-    `LANGSMITH_API_KEY`/`LANGSMITH_PROJECT` directly from `os.environ`. This
-    keeps `.env` the single place tracing is configured, matching every other
-    setting in this project, while still using LangSmith's own env-driven
-    activation underneath. A no-op, and thus safe to call unconditionally,
+    `LANGSMITH_API_KEY`/`LANGSMITH_PROJECT`/`LANGSMITH_ENDPOINT` directly from
+    `os.environ`. This keeps `.env` the single place tracing is configured,
+    matching every other setting in this project, while still using
+    LangSmith's own env-driven activation underneath. `langsmith_endpoint`
+    defaults to LangSmith's US API and must be overridden to
+    `https://eu.api.smith.langchain.com` for an account on LangSmith's EU
+    region - verified against a real EU-region account and key, which
+    otherwise gets a bare `403 Forbidden` with no other detail from the
+    default US endpoint. A no-op, and thus safe to call unconditionally,
     unless both tracing is explicitly enabled and a key is present - tracing
     stays off by default, the same as every other real-LLM-dependent,
     opt-in behaviour in this project.
@@ -867,6 +872,7 @@ def _configure_langsmith_tracing(settings: Settings) -> None:
     os.environ["LANGSMITH_TRACING"] = "true"
     os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key.get_secret_value()
     os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
+    os.environ["LANGSMITH_ENDPOINT"] = str(settings.langsmith_endpoint)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
