@@ -760,6 +760,67 @@ against a real, already-persisted case first, which the Gymshark pair
 above already provided; whether Made.com's fuller historical-failure
 narrative is worth a dedicated later slice is a separate, open decision.
 
+A GitHub Actions CI workflow is now built, the explicitly agreed next step
+chosen over resuming the point-in-time work (proving the as-of mechanism
+against Made.com Design Ltd), after checking that Made.com would not
+actually help close either of the two concrete, previously unclaimed gaps
+against the project brief's original day-by-day schedule: automated
+regression evaluation in CI, and adversarial/prompt-injection testing.
+Checked before building rather than assumed: `Settings()`'s
+`companies_house_api_key`/`openai_api_key` both default to `None`, and
+every test that calls an external API already uses
+`httpx2.MockTransport` -- so the full suite needed no new secrets, only a
+live Postgres+pgvector instance (matching `compose.yaml`'s image) and the
+real Tesseract binary for one OCR test.
+
+Scoping this surfaced one real, previously undocumented gap rather than a
+clean path: three tests
+(`test_run_evaluation_resolves_the_gymshark_fixture_against_real_data`,
+its Nothing Technology counterpart, and
+`test_run_calibration_resolves_the_real_gymshark_fixture`) are deliberate
+drift-guards against the real, manually-ingested Gymshark/Nothing
+Technology corpus, not a synthetic fixture -- confirmed by reading
+`retrieval_evaluation.py`/`judge_calibration.py` rather than assumed, they
+resolve real `transaction_id`s and would raise
+`RetrievalEvaluationError`/`JudgeCalibrationError` against a fresh,
+migrations-only CI database with no companies or filings ingested.
+Reconstructing that real corpus in CI on every push (live Companies House
+downloads plus real Tesseract OCR runs) would be slow, network-flaky, and
+need a secret nothing else in the suite requires. These three tests were
+marked with a new, `pyproject.toml`-registered `real_corpus` pytest
+marker. Excluding them only in CI (via an explicit `-m "not real_corpus"`
+flag there) was tried first, then revisited on request to flip the
+default instead: `pyproject.toml`'s `addopts` now itself carries `-m "not
+real_corpus"`, so a bare `uv run pytest` excludes them everywhere,
+including local development, unless explicitly overridden with `-m
+real_corpus` (only those three) or `-m ""` (everything) - verified all
+three invocations for real against the repo before settling on it, since
+pytest's own behaviour for a repeated single-value option like `-m`
+(command line overriding `addopts`) was worth confirming rather than
+assuming. This also means a fresh `docker compose up` before manually
+ingesting anything no longer fails these three closed by default; the
+opt-in flag is what a contributor who does have the real corpus persisted
+locally would reach for.
+
+`.github/workflows/ci.yml` runs lint (`ruff check`), format check (`ruff
+format --check`), type check (`mypy`), and a bare `pytest` (whose default
+marker expression already excludes `real_corpus`) on every push and pull
+request against `main`, against a fresh
+`pgvector/pgvector:0.8.6-pg17-bookworm` service container with migrations
+applied from empty. Verified end-to-end locally before committing, not
+just written and assumed correct: an isolated, throwaway Postgres
+container on a separate port (so the real dev database was never at
+risk) had migrations applied from empty and the full lint/format/type/test
+pipeline run against it, reproducing exactly what CI will do -- 226
+passed, 3 deselected, matching the local `uv run pytest`'s 229/229 exactly
+minus the three marked tests. LLM/API-key-dependent commands (`investigate`,
+`compare-baseline`, `calibrate-judge`, `evaluate-retrieval
+--retrieval-method vector|hybrid`) stay deliberately outside automated CI,
+continuing this project's existing practice of treating a "real run"
+against the real LLM and persisted corpus as a manual, documented act, not
+an automated gate. Adversarial/prompt-injection testing remains the other
+concrete gap, deliberately not started in this slice.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or

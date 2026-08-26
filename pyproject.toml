@@ -27,9 +27,12 @@ requires = ["uv_build>=0.11.6,<0.12.0"]
 build-backend = "uv_build"
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-config --strict-markers"
+addopts = "-ra --strict-config --strict-markers -m \"not real_corpus\""
 asyncio_mode = "strict"
 testpaths = ["tests"]
+markers = [
+    "real_corpus: needs the real, manually-ingested Gymshark/Nothing Technology corpus (not run in CI; see README's Quality checks section)",
+]
 
 [tool.ruff]
 line-length = 88

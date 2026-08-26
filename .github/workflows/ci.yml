@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: pgvector/pgvector:0.8.6-pg17-bookworm
+        env:
+          POSTGRES_DB: company_researcher
+          POSTGRES_USER: company_researcher
+          POSTGRES_PASSWORD: company_researcher
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U company_researcher -d company_researcher"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://company_researcher:company_researcher@localhost:5432/company_researcher
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tesseract OCR
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Apply database migrations
+        run: uv run alembic upgrade head
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
+
+      # `real_corpus`-marked tests need the real, manually-ingested Gymshark/
+      # Nothing Technology corpus (real Companies House filings, actually
+      # OCR'd) that this job's fresh, migrations-only database does not
+      # have -- reconstructing it here would mean live Companies House
+      # downloads and real Tesseract OCR runs on every push, which is slow,
+      # network-flaky, and needs a secret. `pyproject.toml`'s `addopts`
+      # already excludes them by default, so a bare `pytest` here matches
+      # local development; they stay a deliberate, documented opt-in local
+      # check (see README's Quality checks section) rather than a CI gate.
+      - name: Test
+        run: uv run pytest

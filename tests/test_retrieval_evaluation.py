@@ -451,6 +451,7 @@ def test_load_evaluation_dataset_parses_gymshark_fixture() -> None:
     assert all(question.relevant_pages for question in dataset.questions)
 
 
+@pytest.mark.real_corpus
 @pytest.mark.asyncio
 async def test_run_evaluation_resolves_the_gymshark_fixture_against_real_data() -> None:
     """Guard against the labelled dataset drifting from the persisted corpus."""
@@ -478,6 +479,7 @@ def test_load_evaluation_dataset_parses_nothing_technology_fixture() -> None:
     assert all(question.relevant_pages for question in dataset.questions)
 
 
+@pytest.mark.real_corpus
 @pytest.mark.asyncio
 async def test_run_evaluation_resolves_the_nothing_technology_fixture_against_real_data() -> (
     None

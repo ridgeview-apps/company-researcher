@@ -1992,6 +1992,31 @@ Run the test suite:
 uv run pytest
 ```
 
+Three tests are marked `real_corpus`
+([`test_retrieval_evaluation.py`](tests/test_retrieval_evaluation.py)'s and
+[`test_judge_calibration.py`](tests/test_judge_calibration.py)'s "resolves
+... against real data" tests) because they deliberately guard against the
+hand-labelled evaluation datasets drifting from the real, manually-ingested
+Gymshark and Nothing Technology corpus -- not a synthetic fixture, the
+actual persisted result of downloading real filings and OCR-ing them.
+`pyproject.toml`'s `addopts` excludes them by default (`-m "not
+real_corpus"`), since a fresh database -- CI's, or anyone else's first
+`docker compose up`, before manually ingesting anything -- doesn't have
+that corpus and these three would otherwise fail closed rather than
+skip. Run only them explicitly, overriding the default marker expression,
+once you do have the real corpus persisted locally:
+
+```bash
+uv run pytest -m real_corpus
+```
+
+or run genuinely everything, corpus-dependent tests included, with an
+empty override:
+
+```bash
+uv run pytest -m ""
+```
+
 Check linting and formatting:
 
 ```bash
@@ -2010,6 +2035,30 @@ To apply Ruff's formatter after editing Python files:
 ```bash
 uv run ruff format .
 ```
+
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs this exact
+pipeline -- lint, format check, type check, then `uv run pytest` (whose
+default marker expression already excludes `real_corpus`, see above) -- on
+every push and pull request against `main`, using a fresh
+Postgres service container (the same `pgvector/pgvector:0.8.6-pg17-bookworm`
+image `compose.yaml` uses locally) with migrations applied from empty, and
+the real Tesseract binary installed for the one test that exercises it. No
+API keys or secrets are configured or required, matching what's true of the
+test suite itself: every external API call in it is mocked
+(`httpx2.MockTransport`), and `Settings()`'s `companies_house_api_key`/
+`openai_api_key` both default to `None`.
+
+Commands that call a real LLM or embeddings API (`investigate`,
+`compare-baseline`, `calibrate-judge`, `evaluate-retrieval
+--retrieval-method vector|hybrid`) stay deliberately outside automated CI --
+they cost real money per call and, for the evaluation commands, depend on
+the manually-ingested real corpus discussed above. This project has always
+treated a "real run" against the real LLM and persisted corpus as a
+deliberate, manual, documented act (see every milestone's account
+throughout this file), not an automated gate that fires on every commit;
+this is a continuation of that choice, not a new one made for CI's sake.
 
 ## Project structure
 

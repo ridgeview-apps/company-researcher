@@ -285,6 +285,7 @@ async def test_evaluate_example_compares_judge_verdict_to_human_label(
     assert result.agrees
 
 
+@pytest.mark.real_corpus
 @pytest.mark.asyncio
 async def test_run_calibration_resolves_the_real_gymshark_fixture(
     session: AsyncSession,
