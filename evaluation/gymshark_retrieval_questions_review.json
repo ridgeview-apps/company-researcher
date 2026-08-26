@@ -1,0 +1,105 @@
+{
+  "reviews": [
+    {
+      "question_id": "q1-fy2025-turnover",
+      "question_text": "What was Gymshark's turnover for the year ended 31 July 2025, and how did it compare to the prior year?",
+      "ground_truth_note": "Profit and loss account: turnover GBP490,142k (2025) vs GBP458,624k (2024).",
+      "baseline_claim": "Gymshark Ltd's turnover for the year ended 31 July 2025 was £200 million, which was a 10% increase compared to the previous year's turnover of £181.8 million.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": "Gymshark's turnover for the year ended 31 July 2025 was £490.1 million, which represented an increase compared to £458.6 million for the prior year.",
+      "specialized_citations": [
+        {
+          "document_extraction_id": 33,
+          "page_number": 20,
+          "supporting_text": "Turnover 3 490,142 458,624"
+        }
+      ],
+      "specialized_error": null,
+      "specialized_verdict": "correct",
+      "specialized_refusal_verdict": null
+    },
+    {
+      "question_id": "q2-turnover-trend-fy2021-fy2025",
+      "question_text": "How did Gymshark's turnover change year-over-year from FY2021 through FY2025?",
+      "ground_truth_note": "Turnover confirmed on each period's statement of comprehensive income / profit and loss account: FY2021 GBP437,629k, FY2022 GBP349,054k, FY2023 GBP403,818k, FY2025 GBP490,142k (FY2024 GBP458,624k as a comparative on the FY2025 statement).",
+      "baseline_claim": "Gymshark's turnover increased year-over-year from FY2021 through FY2025.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": null,
+      "specialized_citations": [],
+      "specialized_error": "Finding cited document_extraction_id=42 page_number=37 with a supporting_text quote that is not verbatim text from that page, even after a self-correction retry",
+      "specialized_verdict": null,
+      "specialized_refusal_verdict": "inappropriate"
+    },
+    {
+      "question_id": "q3-fy2022-amendment-comparison",
+      "question_text": "Did the amended FY2022 accounts (AAMD) change the reported turnover, profit, or balance sheet figures compared to the original FY2022 accounts?",
+      "ground_truth_note": "Manually verified: the extracted profit and loss and balance sheet figures are identical between the original and amended documents. Every page-level text difference found between the two documents was OCR noise (character misreads, quote-mark style), not a substantive restatement. This question is deliberately a case where the correct grounded answer is 'no material change found', not a positive finding.",
+      "baseline_claim": "The amended FY2022 accounts (AAMD) changed the reported turnover, profit, or balance sheet figures compared to the original FY2022 accounts.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": "The amended FY2022 accounts did not change the reported turnover, profit, or balance sheet figures compared to the original FY2022 accounts.",
+      "specialized_citations": [
+        {
+          "document_extraction_id": 43,
+          "page_number": 22,
+          "supporting_text": "Turnover 4 349,054 437,629 Cost of sales (163,709) (143,593) Gross profit 185,345 294,036 Distribution costs (60,755) (93,184) Administrative expenses (119,039) (139,311) Other operating income 5 7,784 - Operating profit 6 13,335 61,541 Interest receivable and similar income 10 3,765 1,278 Interest payable and similar expenses 11 (1,092) (426) Profit before tax 16,008 62,393 Tax on profit 12 (3,381) (13,503) Profit for the financial year 12,627 48,890"
+        },
+        {
+          "document_extraction_id": 44,
+          "page_number": 22,
+          "supporting_text": "Turnover 4 349,054 437,629 Cost of sales (163,709) (143,593) Gross profit 185,345 294,036 Distribution costs (60,755) (93,184) Administrative expenses (119,039) (139,311) Other operating income 5 7,784 - Operating profit 6 13,335 61,541 Interest receivable and similar income 10 3,765 1,278 Interest payable and similar expenses 11 (1,092) (426) Profit before tax 16,008 62,393 Tax on profit 12 (3,381) (13,503) Profit for the financial year 12,627 48,890"
+        }
+      ],
+      "specialized_error": null,
+      "specialized_verdict": "correct",
+      "specialized_refusal_verdict": null
+    },
+    {
+      "question_id": "q4-directors-fy2021-fy2025",
+      "question_text": "Who were Gymshark's directors and company secretary according to each set of annual accounts from FY2021 to FY2025?",
+      "ground_truth_note": "Company information page of each filing. FY2021: B Francis, S Hewitt, P Richardson (resigned 31 Mar 2022), P Daw; secretary C Reed. FY2022: B Francis, N Chana; secretary C Reed. FY2023: B Francis, M Dunn, N A McElhinney; secretary C Reed. FY2025: B Francis, N A McElhinney, R Sanders (appointed 1 Feb 2025); secretary C Reed.",
+      "baseline_claim": "The directors and company secretary of Gymshark LTD from FY2021 to FY2025 are not publicly disclosed in detail in my knowledge base.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": null,
+      "specialized_citations": [],
+      "specialized_error": "Finding cited document_extraction_id=33 page_number=13 with a supporting_text quote that is not verbatim text from that page, even after a self-correction retry",
+      "specialized_verdict": null,
+      "specialized_refusal_verdict": "appropriate"
+    },
+    {
+      "question_id": "q5-dividends-fy2022-vs-fy2025",
+      "question_text": "What dividends did Gymshark pay in FY2022, and how does that compare to FY2025?",
+      "ground_truth_note": "FY2022 dividends note: GBP10,600k paid (2021: GBPnil). FY2025 directors' report states GBP26.0m paid (2024: GBP12.7m).",
+      "baseline_claim": "Gymshark did not pay any dividends in FY2022, and I don't have information on dividends paid in FY2025.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": null,
+      "specialized_citations": [],
+      "specialized_error": "Finding cited document_extraction_id=42 page_number=27 with a supporting_text quote that is not verbatim text from that page, even after a self-correction retry",
+      "specialized_verdict": null,
+      "specialized_refusal_verdict": "inappropriate"
+    },
+    {
+      "question_id": "q6-going-concern-fy2023",
+      "question_text": "What did the directors identify as the Company's going-concern position in the FY2023 accounts?",
+      "ground_truth_note": "Going concern note references a GBP50m committed revolving credit facility (plus GBP30m accordion) expiring December 2024, quarterly covenant testing, and downside-scenario modelling.",
+      "baseline_claim": "The directors identified GYMSHARK LTD's going-concern position as stable in the FY2023 accounts, indicating confidence in the company's ability to continue its operations for the foreseeable future.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": "The directors believe the Company has adequate available resources to fund its operations for the foreseeable future, and not less than 12 months from the date of the signing of these Company financial statements, and so determine that it remains appropriate for the Company financial statements to be prepared on a going concern basis.",
+      "specialized_citations": [
+        {
+          "document_extraction_id": 42,
+          "page_number": 30,
+          "supporting_text": "Based on their assessment, the directors believe the Company has adequate available resources to fund its operations for the foreseeable future, and not less than 12 months from the date of the signing of these Company financial statements, and so determine that it remains appropriate for the Company financial statements to be prepared on a going concern basis."
+        }
+      ],
+      "specialized_error": null,
+      "specialized_verdict": "partially_correct",
+      "specialized_refusal_verdict": null
+    }
+  ]
+}

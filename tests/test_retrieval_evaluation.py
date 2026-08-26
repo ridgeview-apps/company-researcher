@@ -449,6 +449,7 @@ def test_load_evaluation_dataset_parses_gymshark_fixture() -> None:
     assert dataset.company_number == GYMSHARK_COMPANY_NUMBER
     assert len(dataset.questions) == 6
     assert all(question.relevant_pages for question in dataset.questions)
+    assert all(question.note for question in dataset.questions)
 
 
 @pytest.mark.real_corpus
@@ -477,6 +478,7 @@ def test_load_evaluation_dataset_parses_nothing_technology_fixture() -> None:
     assert dataset.company_number == NOTHING_TECHNOLOGY_COMPANY_NUMBER
     assert len(dataset.questions) == 6
     assert all(question.relevant_pages for question in dataset.questions)
+    assert all(question.note for question in dataset.questions)
 
 
 @pytest.mark.real_corpus

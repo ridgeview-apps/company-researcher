@@ -9,6 +9,13 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from company_researcher.accuracy_scoring import (
+    AccuracyScoringError,
+    generate_accuracy_review,
+    load_accuracy_review,
+    save_accuracy_review,
+    score_accuracy_review,
+)
 from company_researcher.adversarial_injection import (
     AdversarialInjectionError,
     load_injection_dataset,
@@ -306,6 +313,40 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=DEFAULT_EVALUATION_DATASET,
         help=f"Path to an evaluation dataset (default: {DEFAULT_EVALUATION_DATASET}).",
+    )
+
+    generate_review_parser = subparsers.add_parser(
+        "generate-accuracy-review",
+        help=(
+            "Run a real baseline-vs-specialized comparison and write a "
+            "factual-accuracy review template (verdicts left blank for a "
+            "human to fill in) alongside the dataset's ground truth."
+        ),
+    )
+    generate_review_parser.add_argument(
+        "dataset_path",
+        nargs="?",
+        default=DEFAULT_EVALUATION_DATASET,
+        help=f"Path to an evaluation dataset (default: {DEFAULT_EVALUATION_DATASET}).",
+    )
+    generate_review_parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Path to write the review template to (default: the dataset "
+            "path with '_review.json' appended to its stem)."
+        ),
+    )
+
+    score_review_parser = subparsers.add_parser(
+        "score-accuracy-review",
+        help=(
+            "Score a completed factual-accuracy review (every verdict "
+            "filled in by a human) and report accuracy per baseline."
+        ),
+    )
+    score_review_parser.add_argument(
+        "review_path", help="Path to a completed accuracy review JSON file."
     )
 
     injection_parser = subparsers.add_parser(
@@ -811,6 +852,75 @@ def run_baseline_comparison(dataset_path: str) -> str:
     return asyncio.run(compare_baseline_command(dataset_path))
 
 
+def _default_review_output_path(dataset_path: str) -> Path:
+    """Derive a review-template output path from a dataset path, e.g. foo.json -> foo_review.json."""
+    dataset = Path(dataset_path)
+    return dataset.with_name(f"{dataset.stem}_review.json")
+
+
+async def generate_accuracy_review_command(
+    dataset_path: str, output_path: str | None
+) -> str:
+    """Run a real baseline comparison and write a blank factual-accuracy review template."""
+    dataset = load_evaluation_dataset(Path(dataset_path))
+    settings = Settings()
+    engine = create_database_engine(settings)
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            async with ChatClient.from_settings(settings) as chat_client:
+                comparisons = await run_comparison(session, chat_client, dataset)
+    finally:
+        await engine.dispose()
+
+    reviews = generate_accuracy_review(comparisons, dataset)
+    resolved_output_path = (
+        Path(output_path)
+        if output_path is not None
+        else _default_review_output_path(dataset_path)
+    )
+    save_accuracy_review(reviews, resolved_output_path)
+    return (
+        f"Wrote {len(reviews)} question(s) to {resolved_output_path}. "
+        "Fill in every baseline_verdict and (specialized_verdict or "
+        "specialized_refusal_verdict) field, then run "
+        f"'company-researcher score-accuracy-review {resolved_output_path}'."
+    )
+
+
+def run_generate_accuracy_review(dataset_path: str, output_path: str | None) -> str:
+    """Generate one accuracy-review template from the synchronous CLI."""
+    return asyncio.run(generate_accuracy_review_command(dataset_path, output_path))
+
+
+def _format_accuracy_report(report_review_path: str) -> str:
+    """Score a completed accuracy review and render its per-baseline breakdown."""
+    reviews = load_accuracy_review(Path(report_review_path))
+    report = score_accuracy_review(reviews)
+
+    lines = [
+        f"Baseline:            correct={report.baseline.correct} "
+        f"partially_correct={report.baseline.partially_correct} "
+        f"incorrect={report.baseline.incorrect} "
+        f"(correct_rate={report.baseline.correct_rate:.3f}, n={report.baseline.total})",
+        f"Specialized (claims): correct={report.specialized_claims.correct} "
+        f"partially_correct={report.specialized_claims.partially_correct} "
+        f"incorrect={report.specialized_claims.incorrect} "
+        f"(correct_rate={report.specialized_claims.correct_rate:.3f}, "
+        f"n={report.specialized_claims.total})",
+        f"Specialized (refusals): appropriate={report.specialized_refusals.appropriate} "
+        f"inappropriate={report.specialized_refusals.inappropriate} "
+        f"(appropriate_rate={report.specialized_refusals.appropriate_rate:.3f}, "
+        f"n={report.specialized_refusals.total})",
+    ]
+    return "\n".join(lines)
+
+
+def run_score_accuracy_review(review_path: str) -> str:
+    """Score one completed accuracy review from the synchronous CLI."""
+    return _format_accuracy_report(review_path)
+
+
 async def test_injection_command(dataset_path: str) -> str:
     """Run every adversarial case in a dataset against a real chat client."""
     dataset = load_injection_dataset(Path(dataset_path))
@@ -911,6 +1021,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = run_judge_calibration(args.dataset_path)
         elif args.command == "compare-baseline":
             output = run_baseline_comparison(args.dataset_path)
+        elif args.command == "generate-accuracy-review":
+            output = run_generate_accuracy_review(args.dataset_path, args.output)
+        elif args.command == "score-accuracy-review":
+            output = run_score_accuracy_review(args.review_path)
         elif args.command == "test-injection":
             output = run_injection_test(args.dataset_path)
         else:
@@ -957,6 +1071,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except AdversarialInjectionError as error:
         print(f"Adversarial injection error: {error}", file=sys.stderr)
+        return 1
+    except AccuracyScoringError as error:
+        print(f"Accuracy scoring error: {error}", file=sys.stderr)
         return 1
 
     print(output)

@@ -1,0 +1,114 @@
+{
+  "reviews": [
+    {
+      "question_id": "q1-fy2023-revenue-loss",
+      "question_text": "What was Nothing Technology's revenue and loss for the year ended 31 December 2023, and how did it compare to the prior period?",
+      "ground_truth_note": "Strategic report KPI table (page 4): revenue GBP49,605k (2023) vs an adjusted 12-month 2022 comparator of GBP44,253k (12.1% growth). Statement of comprehensive income (page 12) states the unadjusted comparative: the 14-month period to 31 December 2022 reported GBP51,629k. Directors' report (page 6) states the loss after taxation was GBP59.4m (2022: GBP43.4m).",
+      "baseline_claim": "Nothing Technology Limited reported a revenue of £40 million and a loss of £15 million for the year ended 31 December 2023. This was a decrease in revenue compared to £50 million in the prior period, which indicates a decline in performance.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": null,
+      "specialized_citations": [],
+      "specialized_error": "Finding cited document_extraction_id=1900 page_number=6 with a supporting_text quote that is not verbatim text from that page, even after a self-correction retry",
+      "specialized_verdict": null,
+      "specialized_refusal_verdict": "inappropriate"
+    },
+    {
+      "question_id": "q2-registered-charges-2024-2026",
+      "question_text": "What charges has Nothing Technology registered against its assets, and to which security agents?",
+      "ground_truth_note": "Two distinct batches, each three charges created the same day: 18 December 2024 (charge codes ...0001/0002/0003), all naming Banco Santander, S.A. as security agent, covering a shares pledge, a fixed charge over investments/plant/IP, and a US intellectual-property security agreement respectively; and 1 July 2026 (charge codes ...0004/0005/0006), all naming Ocean II PLO LLC as security agent -- a different lender entirely. This is a genuine, filing-established fact (the security agent changed between batches), not an inference.",
+      "baseline_claim": "Nothing Technology Limited has charges registered against its assets, typically involving secured loans or financing arrangements with various banks or financial institutions serving as security agents.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": "Nothing Technology has registered charges against all of its assets and undertakings in favor of Ocean fl PLO LLC as the Security Agent.",
+      "specialized_citations": [
+        {
+          "document_extraction_id": 1904,
+          "page_number": 7,
+          "supporting_text": "Charged Assets means all of the assets and undertaking of the Chargor, both present and future, which from time to time are the subject of any Security Interests created (or expressed or purported to be created) by it in favour of the Security Agent by or pursuant to this Security."
+        },
+        {
+          "document_extraction_id": 1904,
+          "page_number": 7,
+          "supporting_text": "Ocean fl PLO LLC as security trustee for the Secured Parties (the Security Agent)"
+        }
+      ],
+      "specialized_error": null,
+      "specialized_verdict": "partially_correct",
+      "specialized_refusal_verdict": null
+    },
+    {
+      "question_id": "q3-december-2024-facility-evidence",
+      "question_text": "What do the filings establish about the facility Nothing Technology entered into in December 2024, and which charges were registered in connection with it?",
+      "ground_truth_note": "The FY2023 accounts' post-reporting-date-events (page 6) and going-concern disclosures (page 7 directors' report, page 16 notes -- near-identical boilerplate, the same repeated-disclosure pattern documented for Gymshark's going-concern question) state that on 18 December 2024 the company and its ultimate holding company entered a facility agreement with a bank for GBP30m to support working capital. The three MR01 filings dated the same day (18/12/2024) name Banco Santander, S.A. as security agent. The accounts narrative never names Santander explicitly and states dates as prose ('18 December 2024') while the charge filings use numeric form ('18/12/2024') -- a vocabulary/format mismatch between the two document types, deliberately included as this dataset's hardest question, the same role q3 plays in the Gymshark dataset: correct grounding requires bridging two different documents' vocabularies, which a single short query struggles to boost simultaneously. This question is a deliberate test of whether retrieval alone can support answering 'what do the filings establish' -- it does not itself ask, and the dataset does not adjudicate, whether interpreting these charges as a sign of financial distress would be a supported inference or speculation beyond the evidence; that judgement belongs to the investigation agent, not to retrieval evaluation.",
+      "baseline_claim": "Nothing Technology Limited entered into a facility in December 2024, which involved specific charges being registered in connection with it.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": "The filings establish that Nothing Technology entered into an Intellectual Property Security Agreement with Banco Santander as security agent on December 18, 2024. Three charges were registered in connection with this agreement.",
+      "specialized_citations": [
+        {
+          "document_extraction_id": 1903,
+          "page_number": 4,
+          "supporting_text": "This INTELLECTUAL PROPERTY SECURITY AGREEMENT (as amended, restated, supplemented or otherwise modified from time to time, this “Agreement”) is entered into as of December 18 , 2024, between BANCO SANTANDER, 8.A., as security agent (“Security Agent”) and NOTHING TECHNOLOGY LIMITED, a company incorporated under the laws of England and Wales (“Grantor”)."
+        },
+        {
+          "document_extraction_id": 1901,
+          "page_number": 3,
+          "supporting_text": "the Registrar of Companies for England and Wales hereby certifies that a charge dated 18th December 2024 and created by NOTHING TECHNOLOGY LIMITED was delivered pursuant to Chapter A1 Part 25 of the Companies Act 2006 on 20th December 2024."
+        },
+        {
+          "document_extraction_id": 1902,
+          "page_number": 3,
+          "supporting_text": "the Registrar of Companies for England and Wales hereby certifies that a charge dated 18th December 2024 and created by NOTHING TECHNOLOGY LIMITED was delivered pursuant to Chapter A1 Part 25 of the Companies Act 2006 on 20th December 2024."
+        },
+        {
+          "document_extraction_id": 1903,
+          "page_number": 3,
+          "supporting_text": "the Registrar of Companies for England and Wales hereby certifies that a charge dated 18th December 2024 and created by NOTHING TECHNOLOGY LIMITED was delivered pursuant to Chapter A1 Part 25 of the Companies Act 2006 on 20th December 2024."
+        }
+      ],
+      "specialized_error": null,
+      "specialized_verdict": "partially_correct",
+      "specialized_refusal_verdict": null
+    },
+    {
+      "question_id": "q4-directors-fy2021-fy2023",
+      "question_text": "Who were Nothing Technology's directors according to each set of accounts from FY2021 to FY2023?",
+      "ground_truth_note": "FY2021 company information page (the only directors source available -- this filing took small-company audit exemption and has no directors' report): Carl Pei, David Sanmartin Garcia. FY2022 directors' report: Carl Pei, David Sanmartin Garcia (resigned 1 April 2023), Timothy Holbrow (appointed 1 April 2023). FY2023 directors' report: identical director list and dates to FY2022's, since both cover the same 1 April 2023 change from either side of the accounting reference date.",
+      "baseline_claim": "The directors of Nothing Technology Limited from FY2021 to FY2023 included Carl Pei and other executive members involved in the company.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": null,
+      "specialized_citations": [],
+      "specialized_error": "Finding cited document_extraction_id=1898 page_number=4 with a supporting_text quote that is not verbatim text from that page, even after a self-correction retry",
+      "specialized_verdict": null,
+      "specialized_refusal_verdict": "appropriate"
+    },
+    {
+      "question_id": "q5-revenue-trend-fy2021-fy2023",
+      "question_text": "How did Nothing Technology's revenue change across the periods reported in its FY2022 and FY2023 accounts?",
+      "ground_truth_note": "The FY2022 statement of comprehensive income (page 10) reports both the 14-month period to 31 December 2022 (GBP51,629k) and, as a restated comparative, the period from incorporation to 31 October 2021 (GBP3,140k). The FY2023 statement of comprehensive income (page 12) reports the year to 31 December 2023 (GBP49,605k) alongside the same FY2022 GBP51,629k comparative. No single document states all three periods together; the trend can only be assembled by combining both filings' comparative columns.",
+      "baseline_claim": "Nothing Technology Limited's revenue increased from FY2022 to FY2023.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": null,
+      "specialized_citations": [],
+      "specialized_error": "Finding cited document_extraction_id=1899 page_number=21 with a supporting_text quote that is not verbatim text from that page, even after a self-correction retry",
+      "specialized_verdict": null,
+      "specialized_refusal_verdict": "appropriate"
+    },
+    {
+      "question_id": "q6-going-concern-fy2023",
+      "question_text": "What did the directors identify as Nothing Technology's going-concern position in the FY2023 accounts, and what did they cite in support?",
+      "ground_truth_note": "Directors' report (page 7) and notes (page 16) state near-identical going-concern text: cash resources of GBP1.4m (2022: GBP4.6m) and current assets of GBP11.9m (2022: GBP11.1m), a letter from the ultimate parent confirming financial support for at least 12 months, the June 2023 $96m group fundraising round, and the December 2024 GBP30m debt fundraising. This mirrors the Gymshark going-concern question's dynamic: the FY2022 accounts' directors' report (page 4) states near-identical going-concern boilerplate for the prior period and is a genuine distractor a query must not be confused by.",
+      "baseline_claim": "The directors of Nothing Technology Limited identified a positive going-concern position in the FY2023 accounts, supported by sufficient cash reserves and projections of future sales growth.",
+      "baseline_citations": [],
+      "baseline_verdict": "incorrect",
+      "specialized_claim": null,
+      "specialized_citations": [],
+      "specialized_error": "Finding cited document_extraction_id=1900 page_number=7 with a supporting_text quote that is not verbatim text from that page, even after a self-correction retry",
+      "specialized_verdict": null,
+      "specialized_refusal_verdict": "inappropriate"
+    }
+  ]
+}

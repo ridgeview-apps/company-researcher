@@ -55,6 +55,9 @@ can:
   same labelled question sets, checking every baseline citation attempt
   against real persisted pages (see
   [Compare the specialized agent against a general-LLM baseline](#compare-the-specialized-agent-against-a-general-llm-baseline)
+  below), and score both baselines' real answers for factual accuracy
+  against hand-verified ground truth (see
+  [Human-calibrated factual-accuracy scoring](#human-calibrated-factual-accuracy-scoring)
   below); and
 - pause a finding that is an interpretation, or that reports insufficient
   evidence, for a human analyst to approve, edit, reject, or flag for
@@ -1636,6 +1639,110 @@ final verdict, and the brief's fuller comparison (a second, real-tool-
 using baseline, human-calibrated factual-accuracy scoring, temporal-
 leakage testing) remains open, deliberately unstarted work.
 
+### Human-calibrated factual-accuracy scoring
+
+The section above deliberately did not score factual accuracy
+automatically - a reader compared each printed claim against the
+dataset's hand-verified `note` by eye. This closes that gap for real,
+following this project's rule against inventing evaluation results: every
+verdict below was assigned by a human reading the actual claims produced
+by a real `compare-baseline` run against the actual ground truth, with
+citations resolved back to the real persisted page text where the call
+was close - not generated or guessed by an LLM.
+
+`accuracy_scoring.py` adds `generate_accuracy_review()`, which runs a real
+comparison and writes a review template (`evaluation/<dataset>_review.json`)
+with each question's ground-truth `note`, both baselines' actual claims,
+and - critically - each claim's citations (`document_extraction_id`,
+`page_number`, `supporting_text`), added specifically so a reviewer can
+look up the real page a claim rests on rather than judge blind; a first
+version of this schema omitted citations and had to be extended once that
+gap became apparent in practice. `score_accuracy_review()` then aggregates
+a completed review, failing closed on any question left unreviewed, the
+same discipline citation validation and human-review decisions already
+use elsewhere in this project.
+
+The rubric has two independent axes rather than one, because the
+specialized agent sometimes produces no claim at all (an
+`InvestigationAgentError` refusal) rather than a wrong one: `correct` /
+`partially_correct` / `incorrect` scores an actual claim (the baseline
+always produces one; the specialized agent does when it doesn't refuse),
+while a separate `appropriate` / `inappropriate` axis scores whether
+*refusing* was the right call, given what was actually retrieved - judged
+per question by reading the real page the agent tried and failed to quote
+verbatim. Collapsing refusals into "incorrect" would have hidden the most
+interesting finding below; scoring them as a correctness failure would
+have been actively misleading.
+
+Reviewing this surfaced two genuine findings worth recording on their own,
+independent of the scoring exercise. First: a Nothing Technology charge
+document's real, persisted OCR text reads "Ocean **fl** PLO LLC" where the
+true legal entity name is "Ocean **II** PLO LLC" - confirmed by pulling
+the real page directly, not assumed - a Tesseract misread of "II" as "fl".
+The specialized agent's citation quoting this was not a fabrication; it
+faithfully reported what the corpus actually contains, which happens to
+be an upstream OCR error. Second: a Nothing Technology refusal was traced
+to the exact, already-documented colon-OCR quirk (`£43:4m` for `£43.4m`,
+flagged as an open, unfixed gap in an earlier milestone) - the correct
+loss figures were sitting in clean prose on the page the agent tried to
+cite, and it most likely quoted them correctly with a period, only to
+fail verification because `_normalize_for_quote_check` does not strip
+colons. Both are recorded here rather than quietly folded into the
+scoring, since they're evidence about *why* certain answers looked wrong,
+not just *that* they did.
+
+#### Measured result
+
+Run for real against both persisted datasets (12 questions total),
+scored by hand as described above:
+
+| | Gymshark | Nothing Technology | Combined |
+| --- | --- | --- | --- |
+| Baseline: correct / n | 0 / 6 | 0 / 6 | **0 / 12 (0%)** |
+| Specialized, when it answered: correct+partial / n | 3 / 3 | 2 / 2 | **5 / 5 (100%)** |
+| Specialized, when it answered: fully correct / n | 2 / 3 | 0 / 2 | 2 / 5 |
+| Specialized, when it refused: appropriate / n | 1 / 3 | 2 / 4 | **3 / 7 (43%)** |
+
+Two results, not one, and they point in different directions. The
+no-retrieval baseline was **never once factually correct** across all 12
+real questions when checked against the actual filings - not "often
+wrong," zero for twelve, including confident, specific-sounding figures
+(a fabricated £200m/£181.8m Gymshark turnover; a fabricated £40m
+revenue/£15m loss for Nothing Technology) that were wrong by a wide
+margin every time. This is the strongest, most unambiguous evidence this
+project has produced for its central premise: an ungrounded general LLM
+is not a safe substitute for retrieval-grounded, citation-checked
+answers, at least not for the historical, filing-specific facts these
+datasets ask about.
+
+The specialized agent's own result is more mixed than the earlier,
+eyeballed read suggested, and is reported honestly rather than rounded up
+in either direction. When it produced a claim at all, it was **never
+wrong** (5 of 5 correct or partially correct, 0 incorrect) - the
+citation/quote-verification pipeline is doing real work. But it only
+produced a claim for 5 of the 12 questions; the other 7 it refused
+rather than guess, and of those 7 refusals, **more than half (4 of 7)
+were judged inappropriate** - not because the evidence was genuinely
+insufficient, but because of identifiable, fixable causes: the
+colon-OCR quirk described above, retrieving a harder-to-quote,
+table-mangled page when an easier, correct citation existed elsewhere in
+the same filing, and one case where the aggregation step's copied
+citation didn't survive verbatim. This reframes something the earlier,
+unscored comparison could only gesture at: the quote-verification
+safety net that guarantees the agent is never *wrong* is currently
+buying that guarantee at a real, measurable cost to *completeness* -
+several of its refusals were avoidable, not principled.
+
+This is 12 questions, not a large sample, and this result should not be
+over-read as a precise measurement of either system's true accuracy or
+refusal-appropriateness rate. It is, however, real - every verdict traces
+back to an actual claim and an actual filing page, not an invented one -
+and it is the first evidence this project has that has moved past "the
+specialized agent is slower and costs more but is more auditable" into a
+concrete, prioritizable list of *why* it refuses when it shouldn't. The
+project brief's fuller comparison (a second, real-tool-using baseline;
+temporal-leakage testing) remains open, deliberately unstarted work.
+
 ## Human-in-the-loop review
 
 `docs/project-brief.md` asks the system to distinguish a directly
@@ -2561,12 +2668,13 @@ real-LLM-dependent feature; it was not fabricated or assumed to work here.
 ```text
 .
 ├── compose.yaml                       # Local PostgreSQL service
-├── evaluation/                         # Labelled retrieval evaluation datasets
+├── evaluation/                         # Labelled retrieval/calibration datasets and completed accuracy reviews
 ├── migrations/                        # Alembic schema revisions
 ├── src/company_researcher/
 │   ├── api/                            # FastAPI routes
 │   ├── companies_house/                # Replaceable source integration
 │   ├── db/                             # SQLAlchemy engine, sessions, and models
+│   ├── accuracy_scoring.py             # Human-calibrated factual-accuracy review generation and scoring
 │   ├── adversarial_injection.py        # Prompt-injection adversarial case dataset and runner
 │   ├── artifact_store.py               # Content-addressed source artifacts
 │   ├── baseline_agent.py               # No-retrieval general-LLM baseline
