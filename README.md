@@ -9,6 +9,76 @@ histories commonly found in enterprise AI projects. The long-term value of the
 project is its retrieval, evidence, evaluation, and human-review architecture;
 the public data source should remain replaceable.
 
+## At a glance
+
+Every claim the agent makes is either backed by a citation verified, word for
+word, against a real filing page, or the agent refuses to answer. The
+headline results below are all measured against the real persisted corpus,
+negative results included — this file records what was tried and what
+didn't work, not just what shipped.
+
+- **A no-retrieval general-LLM baseline was factually correct 0 out of 12
+  times**, ever, against hand-verified ground truth, including confident,
+  specific figures that were simply wrong. The specialized agent was correct
+  or partially correct on all 5 of the 12 questions it chose to answer, and
+  refused the other 7 rather than guess — though 4 of those 7 refusals were
+  later found to be avoidable, not genuine evidence gaps. See
+  [Human-calibrated factual-accuracy scoring](#human-calibrated-factual-accuracy-scoring).
+- **Hand-tuned lexical search beat both vector-only and naive hybrid
+  retrieval** on this corpus (Recall@5/@10/MRR 0.625/0.833/0.468, vs.
+  vector's 0.000/0.083/0.044 and RRF hybrid's 0.083/0.125/0.099) — dense
+  embeddings struggle to tell apart near-identical year-over-year
+  boilerplate that lexical search's literal year-token match disambiguates
+  trivially. See
+  [Measure the vector-only retrieval baseline](#measure-the-vector-only-retrieval-baseline)
+  and
+  [Measure the hybrid retrieval baseline](#measure-the-hybrid-retrieval-baseline).
+- **Groundedness costs roughly 21x the tokens**: the specialized agent's
+  mean cost on a successful run (~7,471 tokens) is about 21 times the
+  no-retrieval baseline's (~352 tokens).
+- **7 hand-built prompt-injection attacks now all resist (7/7)**, after two
+  rounds of fixes to close 3 cases that initially bypassed the
+  human-review gate entirely without the model ever visibly "falling for"
+  the injection. See
+  [Adversarial / prompt-injection testing](#adversarial--prompt-injection-testing).
+- **A citation-entailment LLM judge was calibrated against 14 human-labelled
+  examples** (Accuracy 0.857; Precision 1.00 / Recall 0.667 on the
+  "unsupported" class) and deliberately kept out of the live pipeline —
+  it isn't yet reliable enough on its own motivating failure cases. See
+  [Calibrating an LLM judge](#calibrating-an-llm-judge).
+
+**Architecture:**
+
+```text
+Companies House API ──▶ PostgreSQL (structured facts, filings, provenance)
+Filing PDFs ──▶ Tesseract OCR ──▶ page text + pgvector embeddings
+                                        │
+                    lexical (ts_rank) ──┼── vector (cosine) ── hybrid (RRF)
+                                        ▼
+                    LangGraph investigation agent:
+                    generate query → retrieve evidence → synthesize finding
+                    → validate citations → verify quotes → HITL review gate
+                                        │
+                                        ▼
+                      structured Finding, with citations
+```
+
+Companies House is deliberately confined to the ingestion layer — retrieval,
+evidence-checking, evaluation, and human review are written to be swappable
+onto an internal API, database, or document store instead (see
+[`docs/project-brief.md`](docs/project-brief.md)).
+
+**Where to start:** the rest of this file is a chronological build log, not a
+spec — each section records what was tried, measured, and why, including the
+negative results above. For the most decision-relevant sections, start with
+[Run the investigation agent](#run-the-investigation-agent),
+[Human-calibrated factual-accuracy scoring](#human-calibrated-factual-accuracy-scoring),
+and
+[Adversarial / prompt-injection testing](#adversarial--prompt-injection-testing).
+[`AGENTS.md`](AGENTS.md)'s "Current scope" section is the single most
+up-to-date summary of what's built. To run it yourself, jump to
+[Run the complete stack in Docker](#run-the-complete-stack-in-docker).
+
 The project has completed its ingestion and document-processing foundation. It
 can:
 
