@@ -15,4 +15,4 @@ wheels/
 !.env.example
 
 # Locally downloaded source artifacts
-data/artifacts/
+backend/data/artifacts/

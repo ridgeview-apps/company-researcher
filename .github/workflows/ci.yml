@@ -9,6 +9,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: backend
+
     services:
       db:
         image: pgvector/pgvector:0.8.6-pg17-bookworm

@@ -179,10 +179,18 @@ commit the key to Git.
 
 ## Initial setup
 
-Clone the repository and enter its directory, then install the exact locked
+The Python application lives under [`backend/`](backend/), as a sibling of
+the (future) TypeScript analyst UI under `web/`. Every `uv run`, `alembic`,
+`pytest`, `ruff`, `mypy`, and `pyright` command below assumes you have run
+`cd backend` first — equivalently, prefix any of them with `uv run
+--directory backend` from the repository root. `docker compose` commands
+stay at the repository root, since `compose.yaml` lives there.
+
+Clone the repository, enter `backend/`, then install the exact locked
 dependencies:
 
 ```bash
+cd backend
 uv sync
 ```
 
@@ -213,10 +221,14 @@ contains no secrets.
 
 ## Start PostgreSQL
 
-Start the database container in the background:
+From the repository root, start the database container in the background.
+Docker Compose only auto-loads a `.env` file that sits next to
+`compose.yaml`; since `.env` lives under `backend/`, pass `--env-file`
+explicitly so `compose.yaml`'s own `${VAR:-default}` substitutions (for
+example a custom `POSTGRES_PORT`) still pick up your overrides:
 
 ```bash
-docker compose up -d db
+docker compose --env-file backend/.env up -d db
 ```
 
 Check that it is running and healthy:
@@ -253,7 +265,7 @@ Build the application image and start PostgreSQL, the migration task, and the
 FastAPI service:
 
 ```bash
-docker compose up --build -d
+docker compose --env-file backend/.env up --build -d
 ```
 
 Compose starts the services in dependency order:
@@ -2823,46 +2835,55 @@ real-LLM-dependent feature; it was not fabricated or assumed to work here.
 
 ```text
 .
-├── compose.yaml                       # Local PostgreSQL service
-├── evaluation/                         # Labelled retrieval/calibration datasets and completed accuracy reviews
-├── migrations/                        # Alembic schema revisions
-├── src/company_researcher/
-│   ├── api/                            # FastAPI routes
-│   ├── companies_house/                # Replaceable source integration
-│   ├── db/                             # SQLAlchemy engine, sessions, and models
-│   ├── accuracy_scoring.py             # Human-calibrated factual-accuracy review generation and scoring
-│   ├── adversarial_injection.py        # Prompt-injection adversarial case dataset and runner
-│   ├── artifact_store.py               # Content-addressed source artifacts
-│   ├── baseline_agent.py               # No-retrieval general-LLM baseline
-│   ├── baseline_comparison.py          # Baseline-vs-specialized-agent comparison
-│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, investigation, review, calibration, comparison, and adversarial-testing CLI; bridges optional LangSmith tracing config
-│   ├── config.py                       # Environment-backed settings
-│   ├── discriminative_query.py         # Corpus document-frequency query ranking
-│   ├── document_ingestion.py           # Filing-document acquisition and persistence
-│   ├── embedding_persistence.py        # Idempotent page-embedding persistence
-│   ├── embeddings_client.py            # Async client for the embeddings provider
-│   ├── entailment_judge.py             # Citation-entailment LLM judge (calibration-only)
-│   ├── extraction_persistence.py       # Idempotent page-extraction persistence
-│   ├── fiscal_year_extraction.py       # Deterministic fiscal-year extraction from question text
-│   ├── fiscal_year_lookup.py           # Filing lookup by accounting period (made_up_date)
-│   ├── human_review.py                 # Human-in-the-loop review gate and decision persistence
-│   ├── hybrid_search.py                # Reciprocal Rank Fusion of lexical and vector rankings
-│   ├── ingestion.py                    # Idempotent persistence of source data
-│   ├── investigation_agent.py          # LangGraph investigation agent, citation validation, and per-fiscal-year trace spans
-│   ├── judge_calibration.py            # LLM-judge-vs-human-label calibration harness
-│   ├── lexical_search.py               # PostgreSQL full-text page search
-│   ├── llm_client.py                   # Async client for the chat completions provider, traced via LangSmith when enabled
-│   ├── main.py                         # FastAPI application factory
-│   ├── pdf_extraction.py               # Page-aware local PDF OCR
-│   ├── query_construction.py           # Deterministic stopword-removal query derivation
-│   ├── retrieval_evaluation.py         # Recall@K / MRR scoring against labelled data
-│   └── vector_search.py                # pgvector cosine-distance page search
-├── tests/                              # Focused unit and API tests
-├── .env.example                        # Safe configuration template
-├── alembic.ini                         # Alembic configuration
-├── pyproject.toml                      # Package, tools, and dependencies
-└── uv.lock                             # Reproducible dependency lock
+├── compose.yaml                        # Local PostgreSQL, migration, and API services
+├── backend/                            # Python: ingestion, retrieval, agent, evaluation, API
+│   ├── evaluation/                     # Labelled retrieval/calibration datasets and completed accuracy reviews
+│   ├── migrations/                     # Alembic schema revisions
+│   ├── src/company_researcher/
+│   │   ├── api/                        # FastAPI routes
+│   │   ├── companies_house/            # Replaceable source integration
+│   │   ├── db/                         # SQLAlchemy engine, sessions, and models
+│   │   ├── accuracy_scoring.py         # Human-calibrated factual-accuracy review generation and scoring
+│   │   ├── adversarial_injection.py    # Prompt-injection adversarial case dataset and runner
+│   │   ├── artifact_store.py           # Content-addressed source artifacts
+│   │   ├── baseline_agent.py           # No-retrieval general-LLM baseline
+│   │   ├── baseline_comparison.py      # Baseline-vs-specialized-agent comparison
+│   │   ├── cli.py                      # Inspection, ingestion, extraction, embedding, evaluation, investigation, review, calibration, comparison, and adversarial-testing CLI; bridges optional LangSmith tracing config
+│   │   ├── config.py                   # Environment-backed settings
+│   │   ├── discriminative_query.py     # Corpus document-frequency query ranking
+│   │   ├── document_ingestion.py       # Filing-document acquisition and persistence
+│   │   ├── embedding_persistence.py    # Idempotent page-embedding persistence
+│   │   ├── embeddings_client.py        # Async client for the embeddings provider
+│   │   ├── entailment_judge.py         # Citation-entailment LLM judge (calibration-only)
+│   │   ├── extraction_persistence.py   # Idempotent page-extraction persistence
+│   │   ├── fiscal_year_extraction.py   # Deterministic fiscal-year extraction from question text
+│   │   ├── fiscal_year_lookup.py       # Filing lookup by accounting period (made_up_date)
+│   │   ├── human_review.py             # Human-in-the-loop review gate and decision persistence
+│   │   ├── hybrid_search.py            # Reciprocal Rank Fusion of lexical and vector rankings
+│   │   ├── ingestion.py                # Idempotent persistence of source data
+│   │   ├── investigation_agent.py      # LangGraph investigation agent, citation validation, and per-fiscal-year trace spans
+│   │   ├── judge_calibration.py        # LLM-judge-vs-human-label calibration harness
+│   │   ├── lexical_search.py           # PostgreSQL full-text page search
+│   │   ├── llm_client.py               # Async client for the chat completions provider, traced via LangSmith when enabled
+│   │   ├── main.py                     # FastAPI application factory
+│   │   ├── pdf_extraction.py           # Page-aware local PDF OCR
+│   │   ├── query_construction.py       # Deterministic stopword-removal query derivation
+│   │   ├── retrieval_evaluation.py     # Recall@K / MRR scoring against labelled data
+│   │   └── vector_search.py            # pgvector cosine-distance page search
+│   ├── tests/                          # Focused unit and API tests
+│   ├── .env.example                    # Safe configuration template
+│   ├── alembic.ini                     # Alembic configuration
+│   ├── pyproject.toml                  # Package, tools, and dependencies
+│   └── uv.lock                         # Reproducible dependency lock
+└── web/                                # TypeScript analyst review UI (not yet built)
 ```
+
+`backend/` and `web/` are deliberately symmetric siblings, each with its own
+toolchain, so the domain-specific Companies House integration and the
+reusable AI/retrieval/evaluation/HITL architecture stay separable from the
+analyst-facing interaction layer. `compose.yaml`, this file, `AGENTS.md`, and
+`docs/` stay at the repository root since they describe or orchestrate the
+whole project, not just the Python side.
 
 The full product direction and intended later phases are described in
 [`docs/project-brief.md`](docs/project-brief.md).

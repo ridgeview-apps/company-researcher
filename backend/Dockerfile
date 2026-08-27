@@ -16,7 +16,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock ./
 COPY src ./src
 
 RUN uv sync --locked --no-dev
