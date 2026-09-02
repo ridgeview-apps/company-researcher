@@ -20,7 +20,7 @@ services:
 
   migrate:
     build:
-      context: .
+      context: backend
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-company_researcher}:${POSTGRES_PASSWORD:-company_researcher}@db:5432/${POSTGRES_DB:-company_researcher}
     command:
@@ -34,9 +34,9 @@ services:
 
   api:
     build:
-      context: .
+      context: backend
     env_file:
-      - .env
+      - backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-company_researcher}:${POSTGRES_PASSWORD:-company_researcher}@db:5432/${POSTGRES_DB:-company_researcher}
     ports:

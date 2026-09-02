@@ -1,7 +1,9 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_researcher.db.models import HumanReview
@@ -67,6 +69,25 @@ async def record_pending_review(
     session.add(review)
     await session.commit()
     return review.id
+
+
+async def list_reviews(
+    session: AsyncSession, *, status: str | None = None
+) -> Sequence[HumanReview]:
+    """List persisted human reviews, ordered oldest first, optionally filtered by status.
+
+    Shared by the CLI's `list-reviews` command and the review API so both
+    read the same query rather than each keeping its own copy.
+    """
+    statement = select(HumanReview).order_by(HumanReview.created_at)
+    if status is not None:
+        statement = statement.where(HumanReview.status == status)
+    return (await session.scalars(statement)).all()
+
+
+async def get_review(session: AsyncSession, review_id: int) -> HumanReview | None:
+    """Fetch one persisted human review by id, or None if it doesn't exist."""
+    return await session.get(HumanReview, review_id)
 
 
 @dataclass(frozen=True)

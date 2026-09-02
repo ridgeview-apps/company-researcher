@@ -351,12 +351,29 @@ async def _create_filing_with_pages(
 @pytest.mark.asyncio
 async def test_apply_evidence_relevance_backstop_forces_false_for_unrelated_citation(
     session: AsyncSession,
+    company: Company,
 ) -> None:
     """Regression test for the real adversarial-injection finding (see README's
     "Adversarial / prompt-injection testing" section): a citation that is
     genuinely, topically unrelated to the question must not be allowed to
     support a confident evidence_sufficient=True claim.
+
+    Seeds its own single-page corpus containing only the question's target
+    discriminative terms ("fraud", "investigation") and nothing else the
+    question's other content words match. `derive_discriminative_query`
+    drops any term with zero document frequency entirely (see
+    `discriminative_query.py`), so on a fresh, otherwise-empty database
+    (e.g. CI's) every question content word would have frequency zero and
+    the backstop would never trigger - this fixture makes the test's
+    correctness self-contained rather than an accident of whatever else
+    happens to already be persisted in a shared development database.
     """
+    await _create_filing_with_pages(
+        session,
+        "backstop-unrelated-citation",
+        ["An unrelated fraud investigation was opened by regulators."],
+    )
+
     finding = Finding(
         claim="This filing does not provide evidence of a fraud investigation.",
         claim_type="fact",
@@ -382,7 +399,17 @@ async def test_apply_evidence_relevance_backstop_forces_false_for_unrelated_cita
 @pytest.mark.asyncio
 async def test_apply_evidence_relevance_backstop_leaves_a_related_citation_unchanged(
     session: AsyncSession,
+    company: Company,
 ) -> None:
+    """Same self-containment reasoning as the test above: seeds its own
+    single-page corpus so the discriminative terms this test depends on
+    ("going", "concern", "position") have nonzero document frequency
+    regardless of what else is persisted in the database this runs against.
+    """
+    await _create_filing_with_pages(
+        session, "backstop-related-citation", ["going concern position"]
+    )
+
     finding = Finding(
         claim="The directors consider the going concern basis appropriate.",
         claim_type="fact",

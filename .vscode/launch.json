@@ -13,8 +13,8 @@
         "--port",
         "8000"
       ],
-      "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/backend/.env",
       "console": "integratedTerminal",
       "justMyCode": true
     },
@@ -27,8 +27,8 @@
         "inspect",
         "${input:companyNumber}"
       ],
-      "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/backend/.env",
       "console": "integratedTerminal",
       "justMyCode": true
     },
@@ -41,10 +41,18 @@
         "ingest",
         "${input:companyNumber}"
       ],
-      "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/backend/.env",
       "console": "integratedTerminal",
       "justMyCode": true
+    },
+    {
+      "name": "Analyst Review UI (Chrome)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/web",
+      "preLaunchTask": "web: dev server"
     }
   ],
   "inputs": [

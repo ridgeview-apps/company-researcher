@@ -179,10 +179,18 @@ commit the key to Git.
 
 ## Initial setup
 
-Clone the repository and enter its directory, then install the exact locked
+The Python application lives under [`backend/`](backend/), as a sibling of
+the (future) TypeScript analyst UI under `web/`. Every `uv run`, `alembic`,
+`pytest`, `ruff`, `mypy`, and `pyright` command below assumes you have run
+`cd backend` first — equivalently, prefix any of them with `uv run
+--directory backend` from the repository root. `docker compose` commands
+stay at the repository root, since `compose.yaml` lives there.
+
+Clone the repository, enter `backend/`, then install the exact locked
 dependencies:
 
 ```bash
+cd backend
 uv sync
 ```
 
@@ -213,10 +221,14 @@ contains no secrets.
 
 ## Start PostgreSQL
 
-Start the database container in the background:
+From the repository root, start the database container in the background.
+Docker Compose only auto-loads a `.env` file that sits next to
+`compose.yaml`; since `.env` lives under `backend/`, pass `--env-file`
+explicitly so `compose.yaml`'s own `${VAR:-default}` substitutions (for
+example a custom `POSTGRES_PORT`) still pick up your overrides:
 
 ```bash
-docker compose up -d db
+docker compose --env-file backend/.env up -d db
 ```
 
 Check that it is running and healthy:
@@ -253,7 +265,7 @@ Build the application image and start PostgreSQL, the migration task, and the
 FastAPI service:
 
 ```bash
-docker compose up --build -d
+docker compose --env-file backend/.env up --build -d
 ```
 
 Compose starts the services in dependency order:
@@ -2274,17 +2286,21 @@ uv run ruff format .
 
 ### Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs this exact
-pipeline -- lint, format check, type check, then `uv run pytest` (whose
-default marker expression already excludes `real_corpus`, see above) -- on
-every push and pull request against `main`, using a fresh
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs two independent
+jobs on every push and pull request against `main`, matching `backend/` and
+`web/`'s separate toolchains. The `backend` job runs this exact pipeline --
+lint, format check, type check, then `uv run pytest` (whose default marker
+expression already excludes `real_corpus`, see above) -- using a fresh
 Postgres service container (the same `pgvector/pgvector:0.8.6-pg17-bookworm`
 image `compose.yaml` uses locally) with migrations applied from empty, and
 the real Tesseract binary installed for the one test that exercises it. No
 API keys or secrets are configured or required, matching what's true of the
 test suite itself: every external API call in it is mocked
 (`httpx2.MockTransport`), and `Settings()`'s `companies_house_api_key`/
-`openai_api_key` both default to `None`.
+`openai_api_key` both default to `None`. The `web` job needs no database or
+secrets at all -- `npm ci`, `npm run lint` (oxlint), then `npm run build`
+(`tsc -b` type checking followed by the production Vite build), the same
+commands a developer runs locally.
 
 Commands that call a real LLM or embeddings API (`investigate`,
 `compare-baseline`, `calibrate-judge`, `evaluate-retrieval
@@ -2819,50 +2835,197 @@ real LangSmith account and a real investigation run, the same manual,
 user-driven verification this project already relies on for every other
 real-LLM-dependent feature; it was not fabricated or assumed to work here.
 
+## Analyst review UI and API
+
+The analyst-review interface `docs/project-brief.md` deferred until "the
+backend HITL workflow exists" is now built, as a first, deliberately
+narrow slice -- reviewing findings the backend has already flagged, not
+launching new investigations or any other operation.
+
+### Splitting the repository first
+
+Before any API or UI code, the repository was split into `backend/` (every
+existing Python component) and a new `web/` sibling, as a trial on this
+branch rather than a foregone conclusion -- the point of trying it on a
+branch first was to assess whether two lockfiles, two linters, and two CI
+jobs were worth it before merging or building on top of it. Every path
+reference this could break was checked, not assumed: `pyproject.toml`'s
+`mypy.files`/`pyright.include`, the CI workflow's working directory, the
+Dockerfile's build context, and a real gotcha confirmed with `docker
+compose ... config` rather than guessed -- Compose's `${VAR:-default}`
+substitution in `compose.yaml` itself only auto-loads a `.env` beside
+`compose.yaml`, a different mechanism from a service's own `env_file:` key,
+so moving `.env` under `backend/` needed `docker compose --env-file
+backend/.env ...` explicitly (see [Start
+PostgreSQL](#start-postgresql)). After the move, the full quality gate
+(`ruff format`, `ruff check`, `mypy`, `pyright`, `pytest`) and a real
+`docker compose up --build -d` were re-run end to end and reproduced
+exactly what had already been verified on `main` (260 passed, 3
+deselected). The trial surfaced no real pain -- every anticipated gotcha
+was handled cleanly -- so the split was kept.
+
+### There is no separate "investigations" store
+
+Designing the API surfaced a fact worth stating plainly before the
+endpoints, because it shaped them: `human_review_gate` only ever persists a
+`HumanReview` row when `needs_human_review()` is true (see [Human-in-the-loop
+review](#human-in-the-loop-review)). A final, non-flagged finding
+(`claim_type=fact`, `evidence_sufficient=true`) is never written to the
+database at all -- it exists only in a CLI invocation's JSON output. So
+"list investigations" and "list pending/decided reviews" were never two
+different resources to build; they're the same `human_reviews` table. Given
+this slice was scoped to review only (see below), that made the API small:
+exactly one resource.
+
+### Endpoints
+
+New `api/reviews.py` router, reusing `human_review.py` directly rather than
+duplicating query or decision logic into route handlers:
+
+- `GET /reviews?status=` -- list, optionally filtered by status. The
+  underlying query used to live inline in `cli.py`'s `list-reviews` command;
+  it was lifted into a new `list_reviews()` function in `human_review.py` so
+  the CLI and the API call the same code instead of keeping two copies.
+- `GET /reviews/{id}` -- full detail: claim, citations (with
+  `document_extraction_id`/`page_number`/`supporting_text`, everything
+  needed to show the cited filing pages), and decision fields once decided.
+- `POST /reviews/{id}/decision` -- calls `apply_review_decision` directly.
+  The request body uses the same internal decision vocabulary the database
+  already stores (`approved`/`edited`/`rejected`/`more_research_requested`)
+  rather than re-adding the CLI's separate `approve`/`edit`/`reject`/
+  `request-more-research` translation layer, since the UI is a new client
+  with no reason to inherit the CLI's own wording.
+
+`main.py` now stores a session factory on `app.state` (previously only the
+engine) behind a `get_session` FastAPI dependency, and enables CORS for the
+Vite dev origin via a new `cors_allowed_origins` setting.
+
+### Scoping the first UI slice
+
+Two options were weighed before building anything: a review-only UI
+(findings still get created by running `investigate` from the CLI), or
+folding in a bare-bones "launch a new investigation" form so the UI is
+self-contained for a demo. The second is a real, not hypothetical, tradeoff
+-- a review-only UI has nothing to show until someone seeds data from a
+terminal -- but `investigate()` takes 2-16+ seconds and real token cost (see
+[Compare the specialized agent against a general-LLM
+baseline](#compare-the-specialized-agent-against-a-general-llm-baseline)),
+which would need a background-job/polling layer the review workflow itself
+doesn't need. Review-only was chosen as this slice's scope; launching
+investigations from the UI is explicitly deferred, not ruled out.
+
+### The frontend
+
+`web/` is a plain Vite + React + TypeScript app -- no Next.js/SSR, since
+this is an internal single-analyst tool, not a public site; no router
+library, since two views (a filterable list, a detail/decision panel) are
+simpler as plain component state than as routes; no authentication layer,
+matching the project's current single-operator scope. `ReviewList` defaults
+to `status=pending` with filters for the other statuses; selecting a review
+opens `ReviewDetailPanel`, showing the claim, why it was flagged, every
+citation's quoted supporting text, and an approve/edit/reject/
+request-more-research form that posts back through `api.ts`'s typed fetch
+client.
+
+### Verified for real
+
+7 new tests (`test_api_reviews.py`) against real Postgres via FastAPI's
+`TestClient`, following `test_health.py`'s existing pattern. Full backend
+gate: 267 passed, 3 deselected (up from 260 -- the 7 new tests, nothing
+else moved). The frontend's `npm run build` (`tsc -b` + Vite build) and
+`npm run lint` (oxlint) both pass cleanly.
+
+Beyond the test suite, the API was exercised live against the real
+Dockerized stack: a seeded pending review was listed, fetched, decided, and
+confirmed to reject a second decision (400) and a lookup by an unknown id
+(404), then deleted. That same `GET /reviews` call also surfaced 6 genuine
+pending reviews already sitting in the development database from earlier
+milestones' real `investigate` runs against Gymshark and Nothing
+Technology -- never decided until this endpoint existed to list them.
+
+Manually clicking through the UI itself (not just the API) surfaced one
+real bug: badges (`PENDING`, `INTERPRETATION`) rendered with excess
+whitespace on some rows, worse on rows with a longer `review_reason`
+string. Diagnosed rather than guessed around: `.review-row` used CSS Grid
+with shared `auto`-sized columns across differently-sized row content: a
+long `review_reason` string forced that row's columns wider to fit
+unwrapped, and the badges -- direct grid items, which get "blockified" and
+stretch-aligned by default regardless of their own `display` value --
+stretched to fill the now-wider column. Fixed by moving the row layout from
+grid to flex (badges in their own flex row, so their width depends only on
+their own text), not by patching the specific column widths, since the
+underlying cause was the layout strategy itself.
+
+### What's still open
+
+Launching a new investigation from the UI (deferred above), authentication,
+and editing a finding's citations (not just its claim text -- already
+flagged as out of scope when HITL review itself was built) all remain
+unstarted, deliberately, not overlooked.
+
 ## Project structure
 
 ```text
 .
-├── compose.yaml                       # Local PostgreSQL service
-├── evaluation/                         # Labelled retrieval/calibration datasets and completed accuracy reviews
-├── migrations/                        # Alembic schema revisions
-├── src/company_researcher/
-│   ├── api/                            # FastAPI routes
-│   ├── companies_house/                # Replaceable source integration
-│   ├── db/                             # SQLAlchemy engine, sessions, and models
-│   ├── accuracy_scoring.py             # Human-calibrated factual-accuracy review generation and scoring
-│   ├── adversarial_injection.py        # Prompt-injection adversarial case dataset and runner
-│   ├── artifact_store.py               # Content-addressed source artifacts
-│   ├── baseline_agent.py               # No-retrieval general-LLM baseline
-│   ├── baseline_comparison.py          # Baseline-vs-specialized-agent comparison
-│   ├── cli.py                          # Inspection, ingestion, extraction, embedding, evaluation, investigation, review, calibration, comparison, and adversarial-testing CLI; bridges optional LangSmith tracing config
-│   ├── config.py                       # Environment-backed settings
-│   ├── discriminative_query.py         # Corpus document-frequency query ranking
-│   ├── document_ingestion.py           # Filing-document acquisition and persistence
-│   ├── embedding_persistence.py        # Idempotent page-embedding persistence
-│   ├── embeddings_client.py            # Async client for the embeddings provider
-│   ├── entailment_judge.py             # Citation-entailment LLM judge (calibration-only)
-│   ├── extraction_persistence.py       # Idempotent page-extraction persistence
-│   ├── fiscal_year_extraction.py       # Deterministic fiscal-year extraction from question text
-│   ├── fiscal_year_lookup.py           # Filing lookup by accounting period (made_up_date)
-│   ├── human_review.py                 # Human-in-the-loop review gate and decision persistence
-│   ├── hybrid_search.py                # Reciprocal Rank Fusion of lexical and vector rankings
-│   ├── ingestion.py                    # Idempotent persistence of source data
-│   ├── investigation_agent.py          # LangGraph investigation agent, citation validation, and per-fiscal-year trace spans
-│   ├── judge_calibration.py            # LLM-judge-vs-human-label calibration harness
-│   ├── lexical_search.py               # PostgreSQL full-text page search
-│   ├── llm_client.py                   # Async client for the chat completions provider, traced via LangSmith when enabled
-│   ├── main.py                         # FastAPI application factory
-│   ├── pdf_extraction.py               # Page-aware local PDF OCR
-│   ├── query_construction.py           # Deterministic stopword-removal query derivation
-│   ├── retrieval_evaluation.py         # Recall@K / MRR scoring against labelled data
-│   └── vector_search.py                # pgvector cosine-distance page search
-├── tests/                              # Focused unit and API tests
-├── .env.example                        # Safe configuration template
-├── alembic.ini                         # Alembic configuration
-├── pyproject.toml                      # Package, tools, and dependencies
-└── uv.lock                             # Reproducible dependency lock
+├── compose.yaml                        # Local PostgreSQL, migration, and API services
+├── backend/                            # Python: ingestion, retrieval, agent, evaluation, API
+│   ├── evaluation/                     # Labelled retrieval/calibration datasets and completed accuracy reviews
+│   ├── migrations/                     # Alembic schema revisions
+│   ├── src/company_researcher/
+│   │   ├── api/                        # FastAPI routes
+│   │   ├── companies_house/            # Replaceable source integration
+│   │   ├── db/                         # SQLAlchemy engine, sessions, and models
+│   │   ├── accuracy_scoring.py         # Human-calibrated factual-accuracy review generation and scoring
+│   │   ├── adversarial_injection.py    # Prompt-injection adversarial case dataset and runner
+│   │   ├── artifact_store.py           # Content-addressed source artifacts
+│   │   ├── baseline_agent.py           # No-retrieval general-LLM baseline
+│   │   ├── baseline_comparison.py      # Baseline-vs-specialized-agent comparison
+│   │   ├── cli.py                      # Inspection, ingestion, extraction, embedding, evaluation, investigation, review, calibration, comparison, and adversarial-testing CLI; bridges optional LangSmith tracing config
+│   │   ├── config.py                   # Environment-backed settings
+│   │   ├── discriminative_query.py     # Corpus document-frequency query ranking
+│   │   ├── document_ingestion.py       # Filing-document acquisition and persistence
+│   │   ├── embedding_persistence.py    # Idempotent page-embedding persistence
+│   │   ├── embeddings_client.py        # Async client for the embeddings provider
+│   │   ├── entailment_judge.py         # Citation-entailment LLM judge (calibration-only)
+│   │   ├── extraction_persistence.py   # Idempotent page-extraction persistence
+│   │   ├── fiscal_year_extraction.py   # Deterministic fiscal-year extraction from question text
+│   │   ├── fiscal_year_lookup.py       # Filing lookup by accounting period (made_up_date)
+│   │   ├── human_review.py             # Human-in-the-loop review gate and decision persistence
+│   │   ├── hybrid_search.py            # Reciprocal Rank Fusion of lexical and vector rankings
+│   │   ├── ingestion.py                # Idempotent persistence of source data
+│   │   ├── investigation_agent.py      # LangGraph investigation agent, citation validation, and per-fiscal-year trace spans
+│   │   ├── judge_calibration.py        # LLM-judge-vs-human-label calibration harness
+│   │   ├── lexical_search.py           # PostgreSQL full-text page search
+│   │   ├── llm_client.py               # Async client for the chat completions provider, traced via LangSmith when enabled
+│   │   ├── main.py                     # FastAPI application factory
+│   │   ├── pdf_extraction.py           # Page-aware local PDF OCR
+│   │   ├── query_construction.py       # Deterministic stopword-removal query derivation
+│   │   ├── retrieval_evaluation.py     # Recall@K / MRR scoring against labelled data
+│   │   └── vector_search.py            # pgvector cosine-distance page search
+│   ├── tests/                          # Focused unit and API tests
+│   ├── .env.example                    # Safe configuration template
+│   ├── alembic.ini                     # Alembic configuration
+│   ├── pyproject.toml                  # Package, tools, and dependencies
+│   └── uv.lock                         # Reproducible dependency lock
+└── web/                                # TypeScript analyst review UI
+    ├── src/
+    │   ├── components/
+    │   │   ├── ReviewList.tsx          # Pending/decided reviews, filterable by status
+    │   │   └── ReviewDetailPanel.tsx   # One finding's claim, citations, and decision form
+    │   ├── api.ts                      # Typed fetch client for the review API
+    │   ├── types.ts                    # Response/request shapes matching the API's Pydantic schemas
+    │   └── App.tsx                     # List/detail view switching
+    ├── .env.example                    # Safe configuration template (API base URL)
+    ├── package.json                    # Dependencies and dev/build/lint scripts
+    └── vite.config.ts                  # Vite + React build configuration
 ```
+
+`backend/` and `web/` are deliberately symmetric siblings, each with its own
+toolchain, so the domain-specific Companies House integration and the
+reusable AI/retrieval/evaluation/HITL architecture stay separable from the
+analyst-facing interaction layer. `compose.yaml`, this file, `AGENTS.md`, and
+`docs/` stay at the repository root since they describe or orchestrate the
+whole project, not just the Python side.
 
 The full product direction and intended later phases are described in
 [`docs/project-brief.md`](docs/project-brief.md).
