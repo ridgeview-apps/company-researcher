@@ -1,15 +1,22 @@
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import TypeVar, cast
 
+import httpx2
 import pytest
 import pytest_asyncio
 from pydantic import BaseModel
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from company_researcher.artifact_store import LocalArtifactStore
 from company_researcher.baseline_agent import _BASELINE_SYSTEM_PROMPT
 from company_researcher.baseline_comparison import _citation_realism, compare_question
+from company_researcher.companies_house import (
+    CompaniesHouseClient,
+    CompaniesHouseDocumentClient,
+)
 from company_researcher.config import Settings
 from company_researcher.db.models import (
     Company,
@@ -21,23 +28,131 @@ from company_researcher.db.models import (
 )
 from company_researcher.db.session import create_database_engine, create_session_factory
 from company_researcher.investigation_agent import Citation, Finding
-from company_researcher.llm_client import ChatMessage, ChatUsage
+from company_researcher.llm_client import ChatMessage, ChatUsage, ToolCallTurn
+from company_researcher.pdf_extraction import (
+    ExtractedPage,
+    PdfExtractionConfiguration,
+    PdfExtractionResult,
+)
 from company_researcher.retrieval_evaluation import EvaluationQuestion
+from company_researcher.tool_baseline_agent import _TOOL_BASELINE_SYSTEM_PROMPT
 
 TEST_COMPANY_NUMBER = "TE000009"
 
 _StructuredResponse = TypeVar("_StructuredResponse", bound=BaseModel)
 
+_EMPTY_TOOL_BASELINE_FINDING = Finding(
+    claim="No evidence gathered.",
+    claim_type="fact",
+    evidence_sufficient=False,
+    citations=[],
+)
+
+
+class FakeExtractor:
+    """A `PdfExtractor` double never actually exercised by these tests' tool-baseline path."""
+
+    def __init__(self) -> None:
+        self.configuration = PdfExtractionConfiguration(
+            extractor="fake-ocr",
+            extractor_version="1.0",
+            renderer="fake-renderer",
+            renderer_version="1.0",
+            language="eng",
+            render_dpi=300,
+            page_segmentation_mode=3,
+        )
+
+    async def extract(self, pdf_content: bytes) -> PdfExtractionResult:
+        return PdfExtractionResult(
+            pages=[ExtractedPage(page_number=1, text="unused", character_count=6)],
+            extractor=self.configuration.extractor,
+            extractor_version=self.configuration.extractor_version,
+            renderer=self.configuration.renderer,
+            renderer_version=self.configuration.renderer_version,
+            language=self.configuration.language,
+            render_dpi=self.configuration.render_dpi,
+            page_segmentation_mode=self.configuration.page_segmentation_mode,
+        )
+
+
+_Handler = Callable[[httpx2.Request], Coroutine[None, None, httpx2.Response]]
+
+
+def _companies_house_handler() -> _Handler:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == f"/company/{TEST_COMPANY_NUMBER}":
+            return httpx2.Response(
+                200,
+                json={
+                    "company_name": "Baseline Comparison Test Limited",
+                    "company_number": TEST_COMPANY_NUMBER,
+                    "type": "ltd",
+                },
+                request=request,
+            )
+        if request.url.path == f"/company/{TEST_COMPANY_NUMBER}/filing-history":
+            return httpx2.Response(
+                200,
+                json={
+                    "items": [],
+                    "items_per_page": 100,
+                    "start_index": 0,
+                    "total_count": 0,
+                },
+                request=request,
+            )
+        return httpx2.Response(404, json={"error": "not found"}, request=request)
+
+    return handler
+
+
+@pytest.fixture
+def companies_house_client() -> CompaniesHouseClient:
+    return CompaniesHouseClient(
+        api_key="test-api-key",
+        base_url="https://company.example.test",
+        transport=httpx2.MockTransport(_companies_house_handler()),
+    )
+
+
+async def _unused_document_handler(request: httpx2.Request) -> httpx2.Response:
+    return httpx2.Response(404, json={"error": "not found"}, request=request)
+
+
+@pytest.fixture
+def document_client() -> CompaniesHouseDocumentClient:
+    return CompaniesHouseDocumentClient(
+        api_key="test-api-key",
+        base_url="https://document.example.test",
+        transport=httpx2.MockTransport(_unused_document_handler),
+    )
+
+
+@pytest.fixture
+def artifact_store(tmp_path: Path) -> LocalArtifactStore:
+    return LocalArtifactStore(tmp_path)
+
+
+@pytest.fixture
+def extractor() -> FakeExtractor:
+    return FakeExtractor()
+
 
 class FakeComparisonChatClient:
-    """Satisfies `UsageAwareChatProvider`, routing by which system prompt a call carries.
+    """Satisfies `FullChatProvider`, routing by which system prompt a call carries.
 
-    Both `investigate_with_usage()` (query generation + synthesis) and
-    `answer_without_retrieval()` (the baseline) now call the same
-    `complete_with_usage`/`complete_structured_with_usage` methods on one
+    `investigate_with_usage()` (query generation + synthesis),
+    `answer_without_retrieval()` (the no-tool baseline), and
+    `answer_with_tools()` (the tool-using baseline) all call the same
     shared client, so this fake distinguishes them by inspecting the
-    system message: the baseline's is `_BASELINE_SYSTEM_PROMPT` exactly,
-    everything else is treated as the specialized agent's call.
+    system message: `_BASELINE_SYSTEM_PROMPT` and
+    `_TOOL_BASELINE_SYSTEM_PROMPT` are each exact matches, everything else
+    is treated as the specialized agent's call. `complete_with_tools_and_usage`
+    always immediately stops the tool-calling loop (no tool calls
+    requested) - these tests exercise the no-tool-baseline-vs-specialized
+    comparison specifically; `test_tool_baseline_agent.py` covers the
+    tool-calling loop's own mechanics.
     """
 
     def __init__(
@@ -46,12 +161,14 @@ class FakeComparisonChatClient:
         query: str,
         specialized_finding: Finding,
         baseline_finding: Finding,
+        tool_baseline_finding: Finding = _EMPTY_TOOL_BASELINE_FINDING,
         baseline_usage: ChatUsage | None = None,
         specialized_usage: ChatUsage | None = None,
     ) -> None:
         self._query = query
         self._specialized_finding = specialized_finding
         self._baseline_finding = baseline_finding
+        self._tool_baseline_finding = tool_baseline_finding
         self._baseline_usage = baseline_usage
         self._specialized_usage = specialized_usage
         self.complete_structured_with_usage_calls: list[Sequence[ChatMessage]] = []
@@ -60,6 +177,11 @@ class FakeComparisonChatClient:
         self, messages: Sequence[ChatMessage]
     ) -> tuple[str, ChatUsage | None]:
         return self._query, self._specialized_usage
+
+    async def complete_with_tools_and_usage(
+        self, messages: Sequence[ChatMessage], tools: object
+    ) -> tuple[ToolCallTurn, ChatUsage | None]:
+        return ToolCallTurn(content="", tool_calls=()), None
 
     async def complete_structured_with_usage(
         self,
@@ -71,6 +193,8 @@ class FakeComparisonChatClient:
             return cast(
                 _StructuredResponse, self._baseline_finding
             ), self._baseline_usage
+        if messages[0].content == _TOOL_BASELINE_SYSTEM_PROMPT:
+            return cast(_StructuredResponse, self._tool_baseline_finding), None
         return cast(
             _StructuredResponse, self._specialized_finding
         ), self._specialized_usage
@@ -211,7 +335,12 @@ async def test_citation_realism_returns_empty_for_no_citations(
 
 @pytest.mark.asyncio
 async def test_compare_question_reports_both_findings_and_citation_realism(
-    session: AsyncSession, company: Company
+    session: AsyncSession,
+    company: Company,
+    companies_house_client: CompaniesHouseClient,
+    document_client: CompaniesHouseDocumentClient,
+    artifact_store: LocalArtifactStore,
+    extractor: FakeExtractor,
 ) -> None:
     extraction = await _create_filing_with_pages(
         session,
@@ -263,6 +392,10 @@ async def test_compare_question_reports_both_findings_and_citation_realism(
     comparison = await compare_question(
         session,
         chat_client,
+        companies_house_client,
+        document_client,
+        artifact_store,
+        extractor,
         question,
         TEST_COMPANY_NUMBER,
         "Baseline Comparison Test Limited",
@@ -291,7 +424,12 @@ async def test_compare_question_reports_both_findings_and_citation_realism(
 
 @pytest.mark.asyncio
 async def test_compare_question_catches_a_specialized_agent_citation_error(
-    session: AsyncSession, company: Company
+    session: AsyncSession,
+    company: Company,
+    companies_house_client: CompaniesHouseClient,
+    document_client: CompaniesHouseDocumentClient,
+    artifact_store: LocalArtifactStore,
+    extractor: FakeExtractor,
 ) -> None:
     """The specialized agent refusing a fabricated citation is a comparison result, not a crash."""
     extraction = await _create_filing_with_pages(
@@ -329,6 +467,10 @@ async def test_compare_question_catches_a_specialized_agent_citation_error(
     comparison = await compare_question(
         session,
         chat_client,
+        companies_house_client,
+        document_client,
+        artifact_store,
+        extractor,
         question,
         TEST_COMPANY_NUMBER,
         "Baseline Comparison Test Limited",

@@ -19,6 +19,7 @@ from company_researcher.fiscal_year_lookup import (
 )
 
 TEST_COMPANY_NUMBER = "TE000009"
+OTHER_TEST_COMPANY_NUMBER = "TE000011"
 
 
 @pytest_asyncio.fixture
@@ -30,12 +31,13 @@ async def session() -> AsyncIterator[AsyncSession]:
             yield db_session
     finally:
         async with session_factory() as cleanup_session:
-            await cleanup_session.execute(
-                delete(Filing).where(Filing.company_number == TEST_COMPANY_NUMBER)
-            )
-            await cleanup_session.execute(
-                delete(Company).where(Company.company_number == TEST_COMPANY_NUMBER)
-            )
+            for company_number in (TEST_COMPANY_NUMBER, OTHER_TEST_COMPANY_NUMBER):
+                await cleanup_session.execute(
+                    delete(Filing).where(Filing.company_number == company_number)
+                )
+                await cleanup_session.execute(
+                    delete(Company).where(Company.company_number == company_number)
+                )
             await cleanup_session.commit()
         await engine.dispose()
 
@@ -55,12 +57,31 @@ async def company(session: AsyncSession) -> Company:
     return company
 
 
+@pytest_asyncio.fixture
+async def other_company(session: AsyncSession) -> Company:
+    company = Company(
+        company_number=OTHER_TEST_COMPANY_NUMBER,
+        company_name="OTHER FISCAL YEAR LOOKUP TEST LIMITED",
+        type="ltd",
+        sic_codes=[],
+        raw_profile={},
+        retrieved_at=datetime.now(UTC),
+    )
+    session.add(company)
+    await session.commit()
+    return company
+
+
 async def _create_extraction(
-    session: AsyncSession, transaction_id: str, made_up_date: str
+    session: AsyncSession,
+    transaction_id: str,
+    made_up_date: str,
+    *,
+    company_number: str = TEST_COMPANY_NUMBER,
 ) -> DocumentExtraction:
     now = datetime.now(UTC)
     filing = Filing(
-        company_number=TEST_COMPANY_NUMBER,
+        company_number=company_number,
         transaction_id=transaction_id,
         category="accounts",
         type="AA",
@@ -142,3 +163,37 @@ async def test_document_extraction_ids_for_fiscal_year_returns_empty_for_unknown
     matched_ids = await document_extraction_ids_for_fiscal_year(session, "1999")
 
     assert matched_ids == []
+
+
+@pytest.mark.asyncio
+async def test_document_extraction_ids_for_fiscal_year_scopes_by_company_number(
+    session: AsyncSession, company: Company, other_company: Company
+) -> None:
+    """Regression test for a real observed failure: without company scoping, a
+    genuinely absent year for one company reads as "present" the moment any
+    other company in the shared database happens to have a filing whose own
+    accounting period matches the same year -- exactly what happened when a
+    real Gymshark FY2024 accounts filing (unrelated to the company under
+    test) leaked into an unscoped lookup and zeroed out an otherwise
+    answerable question's retrieval. company_number must restrict the match
+    to the target company's own filings.
+    """
+    other_companys_filing = await _create_extraction(
+        session,
+        "fiscal-year-lookup-other-company-fy2023",
+        "2023-07-31",
+        company_number=OTHER_TEST_COMPANY_NUMBER,
+    )
+
+    matched_ids = await document_extraction_ids_for_fiscal_year(
+        session, "2023", company_number=TEST_COMPANY_NUMBER
+    )
+
+    assert other_companys_filing.id not in matched_ids
+    assert matched_ids == []
+
+    unscoped_matched_ids = await document_extraction_ids_for_fiscal_year(
+        session, "2023", company_number=OTHER_TEST_COMPANY_NUMBER
+    )
+
+    assert other_companys_filing.id in unscoped_matched_ids

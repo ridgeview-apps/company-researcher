@@ -304,8 +304,10 @@ def build_parser() -> argparse.ArgumentParser:
     comparison_parser = subparsers.add_parser(
         "compare-baseline",
         help=(
-            "Compare a no-retrieval general-LLM baseline against the "
-            "specialized investigation agent over a labelled question set."
+            "Compare a no-retrieval general-LLM baseline, a tool-using "
+            "general-LLM baseline (real Companies House tool access), and "
+            "the specialized investigation agent over a labelled question "
+            "set."
         ),
     )
     comparison_parser.add_argument(
@@ -804,6 +806,28 @@ def _format_comparison_report(comparisons: list[QuestionComparison]) -> str:
         )
         lines.append(f"    claim: {baseline.claim}")
 
+        tool_usage_text = (
+            f", tokens={comparison.tool_baseline_usage.total_tokens}"
+            if comparison.tool_baseline_usage is not None
+            else ""
+        )
+        tool_calls_text = f", tool_calls={comparison.tool_baseline_tool_calls_made}"
+        if comparison.tool_baseline_error is not None:
+            lines.append(
+                f"  tool_baseline [{comparison.tool_baseline_latency_seconds:.2f}s"
+                f"{tool_usage_text}{tool_calls_text}] "
+                f"ERROR: {comparison.tool_baseline_error}"
+            )
+        elif comparison.tool_baseline_finding is not None:
+            tool_baseline = comparison.tool_baseline_finding
+            lines.append(
+                f"  tool_baseline [{comparison.tool_baseline_latency_seconds:.2f}s"
+                f"{tool_usage_text}{tool_calls_text}] "
+                f"evidence_sufficient={tool_baseline.evidence_sufficient} "
+                f"citations={len(tool_baseline.citations)}"
+            )
+            lines.append(f"    claim: {tool_baseline.claim}")
+
         specialized_usage_text = (
             f", tokens={comparison.specialized_usage.total_tokens}"
             if comparison.specialized_usage is not None
@@ -829,15 +853,27 @@ def _format_comparison_report(comparisons: list[QuestionComparison]) -> str:
 
 
 async def compare_baseline_command(dataset_path: str) -> str:
-    """Compare the no-retrieval baseline against the specialized agent over a dataset."""
+    """Compare the no-retrieval baseline, the tool-using baseline, and the specialized agent over a dataset."""
     dataset = load_evaluation_dataset(Path(dataset_path))
     settings = Settings()
     engine = create_database_engine(settings)
     try:
         session_factory = create_session_factory(engine)
         async with session_factory() as session:
-            async with ChatClient.from_settings(settings) as chat_client:
-                comparisons = await run_comparison(session, chat_client, dataset)
+            async with (
+                ChatClient.from_settings(settings) as chat_client,
+                CompaniesHouseClient.from_settings(settings) as companies_house_client,
+                CompaniesHouseDocumentClient.from_settings(settings) as document_client,
+            ):
+                comparisons = await run_comparison(
+                    session,
+                    chat_client,
+                    companies_house_client,
+                    document_client,
+                    LocalArtifactStore(settings.artifact_root),
+                    TesseractPdfExtractor(),
+                    dataset,
+                )
     finally:
         await engine.dispose()
 
@@ -865,8 +901,20 @@ async def generate_accuracy_review_command(
     try:
         session_factory = create_session_factory(engine)
         async with session_factory() as session:
-            async with ChatClient.from_settings(settings) as chat_client:
-                comparisons = await run_comparison(session, chat_client, dataset)
+            async with (
+                ChatClient.from_settings(settings) as chat_client,
+                CompaniesHouseClient.from_settings(settings) as companies_house_client,
+                CompaniesHouseDocumentClient.from_settings(settings) as document_client,
+            ):
+                comparisons = await run_comparison(
+                    session,
+                    chat_client,
+                    companies_house_client,
+                    document_client,
+                    LocalArtifactStore(settings.artifact_root),
+                    TesseractPdfExtractor(),
+                    dataset,
+                )
     finally:
         await engine.dispose()
 

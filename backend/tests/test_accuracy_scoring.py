@@ -45,6 +45,11 @@ def _comparison(
         baseline_usage=None,
         baseline_latency_seconds=0.1,
         baseline_citation_realism=(),
+        tool_baseline_finding=None,
+        tool_baseline_usage=None,
+        tool_baseline_error=None,
+        tool_baseline_latency_seconds=0.1,
+        tool_baseline_tool_calls_made=0,
         specialized_finding=(
             _finding(specialized_claim, specialized_citations)
             if specialized_claim is not None

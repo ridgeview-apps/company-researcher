@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from types import TracebackType
@@ -9,17 +10,60 @@ from pydantic import BaseModel, ValidationError
 
 from company_researcher.config import Settings
 
-ChatRole = Literal["system", "user", "assistant"]
+ChatRole = Literal["system", "user", "assistant", "tool"]
 
 StructuredResponse = TypeVar("StructuredResponse", bound=BaseModel)
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """One function-call invocation the model requested."""
+
+    id: str
+    name: str
+    arguments: dict[str, object]
+
+
+@dataclass(frozen=True)
 class ChatMessage:
-    """One message in a chat completion request."""
+    """One message in a chat completion request.
+
+    `tool_calls` and `tool_call_id` are only ever set for the two message
+    shapes a tool-calling round trip needs beyond a plain
+    system/user/assistant turn: an assistant message that requested one or
+    more tool calls (`tool_calls` set, `content` often empty), and a `tool`
+    role message reporting one call's result back (`tool_call_id` set,
+    matching the `ToolCall.id` it answers). Every other message leaves both
+    `None`, so existing callers that only ever pass `role`/`content` are
+    unaffected.
+    """
 
     role: ChatRole
     content: str
+    tool_calls: tuple[ToolCall, ...] | None = None
+    tool_call_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolDefinition:
+    """One function-calling tool a chat completion may be offered."""
+
+    name: str
+    description: str
+    parameters: dict[str, object]
+
+
+@dataclass(frozen=True)
+class ToolCallTurn:
+    """One assistant turn in a tool-calling loop.
+
+    `tool_calls` is empty exactly when the model chose to respond with
+    final text instead of calling another tool - the loop-ending signal a
+    caller like `tool_baseline_agent.py` checks for.
+    """
+
+    content: str | None
+    tool_calls: tuple[ToolCall, ...]
 
 
 @dataclass(frozen=True)
@@ -77,6 +121,46 @@ class UsageAwareChatProvider(Protocol):
         ...
 
 
+class ToolAwareChatProvider(Protocol):
+    """Boundary for a tool-calling loop: one tool-offering turn plus a final structured turn.
+
+    A separate protocol from `UsageAwareChatProvider`, not an addition to
+    it, so callers that never offer tools (every existing caller) are
+    unaffected. `tool_baseline_agent.py` is the only current caller: it
+    drives `complete_with_tools_and_usage` in a loop until the model stops
+    requesting tools, then calls `complete_structured_with_usage` once more
+    for the final `Finding`.
+    """
+
+    async def complete_with_tools_and_usage(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> tuple[ToolCallTurn, ChatUsage | None]:
+        """Complete one turn of a tool-calling loop, returning it alongside token usage."""
+        ...
+
+    async def complete_structured_with_usage(
+        self,
+        messages: Sequence[ChatMessage],
+        response_model: type[StructuredResponse],
+    ) -> tuple[StructuredResponse, ChatUsage | None]:
+        """Complete a structured chat, returning the result alongside token usage."""
+        ...
+
+
+class FullChatProvider(UsageAwareChatProvider, ToolAwareChatProvider, Protocol):
+    """Boundary bundling every capability `baseline_comparison.py` needs.
+
+    `compare_question` runs all three answer paths (no-tool baseline,
+    tool-using baseline, specialized agent) against one shared client, so
+    it needs both `UsageAwareChatProvider` and `ToolAwareChatProvider`'s
+    methods available on a single parameter type rather than accepting two
+    separately-typed client arguments for what is, in practice, one
+    `ChatClient` instance.
+    """
+
+
 class ChatError(Exception):
     """Base exception for chat-provider integration failures."""
 
@@ -101,8 +185,19 @@ class ChatResponseError(ChatError):
     """Raised for an unexpected status or invalid response payload."""
 
 
+class _ChatToolCallFunctionPayload(BaseModel):
+    name: str
+    arguments: str
+
+
+class _ChatToolCallPayload(BaseModel):
+    id: str
+    function: _ChatToolCallFunctionPayload
+
+
 class _ChatChoiceMessage(BaseModel):
     content: str | None = None
+    tool_calls: list[_ChatToolCallPayload] | None = None
 
 
 class _ChatChoice(BaseModel):
@@ -239,6 +334,20 @@ class ChatClient:
                 "Chat provider returned content that does not match the expected schema"
             ) from error
 
+    async def complete_with_tools_and_usage(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> tuple[ToolCallTurn, ChatUsage | None]:
+        """Complete one turn of a tool-calling loop, returning it alongside token usage.
+
+        A separate request path from `_request_completion` rather than an
+        extension of it: that method treats a `None` response `content` as
+        an error, which is the normal, expected shape of a turn where the
+        model requests tool calls instead of answering directly.
+        """
+        return await self._request_completion_with_tools(messages, tools)
+
     @traceable(run_type="llm", name="chat_completion")
     async def _request_completion(
         self,
@@ -262,14 +371,68 @@ class ChatClient:
 
         body: dict[str, object] = {
             "model": self._model,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in messages
-            ],
+            "messages": [self._serialize_message(message) for message in messages],
         }
         if response_format is not None:
             body["response_format"] = response_format
 
+        payload = await self._post_chat_completion(body)
+
+        if not payload.choices or payload.choices[0].message.content is None:
+            raise ChatResponseError("Chat provider returned no completion content")
+
+        return payload.choices[0].message.content, self._parse_usage(payload)
+
+    @traceable(run_type="llm", name="chat_completion_with_tools")
+    async def _request_completion_with_tools(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> tuple[ToolCallTurn, ChatUsage | None]:
+        """Send one tool-offering chat completion request and return the resulting turn."""
+        if not messages:
+            raise ValueError("messages must not be empty")
+        if not tools:
+            raise ValueError("tools must not be empty")
+
+        body: dict[str, object] = {
+            "model": self._model,
+            "messages": [self._serialize_message(message) for message in messages],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in tools
+            ],
+        }
+
+        payload = await self._post_chat_completion(body)
+
+        if not payload.choices:
+            raise ChatResponseError("Chat provider returned no completion content")
+
+        message = payload.choices[0].message
+        tool_calls = tuple(
+            ToolCall(
+                id=raw_call.id,
+                name=raw_call.function.name,
+                arguments=json.loads(raw_call.function.arguments),
+            )
+            for raw_call in (message.tool_calls or [])
+        )
+        return ToolCallTurn(
+            content=message.content, tool_calls=tool_calls
+        ), self._parse_usage(payload)
+
+    async def _post_chat_completion(
+        self, body: dict[str, object]
+    ) -> _ChatCompletionResponsePayload:
+        """Send one raw chat completion request and validate its response shape."""
         try:
             response = await self._client.post("chat/completions", json=body)
         except httpx2.RequestError as error:
@@ -280,25 +443,44 @@ class ChatClient:
         self._raise_for_status(response)
 
         try:
-            payload = _ChatCompletionResponsePayload.model_validate(response.json())
+            return _ChatCompletionResponsePayload.model_validate(response.json())
         except (ValueError, ValidationError) as error:
             raise ChatResponseError(
                 "Chat provider returned an invalid response payload"
             ) from error
 
-        if not payload.choices or payload.choices[0].message.content is None:
-            raise ChatResponseError("Chat provider returned no completion content")
+    @staticmethod
+    def _serialize_message(message: ChatMessage) -> dict[str, object]:
+        """Serialize one `ChatMessage` into the OpenAI-compatible request shape."""
+        serialized: dict[str, object] = {
+            "role": message.role,
+            "content": message.content,
+        }
+        if message.tool_calls:
+            serialized["tool_calls"] = [
+                {
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": json.dumps(tool_call.arguments),
+                    },
+                }
+                for tool_call in message.tool_calls
+            ]
+        if message.tool_call_id is not None:
+            serialized["tool_call_id"] = message.tool_call_id
+        return serialized
 
-        usage = (
-            ChatUsage(
-                prompt_tokens=payload.usage.prompt_tokens,
-                completion_tokens=payload.usage.completion_tokens,
-                total_tokens=payload.usage.total_tokens,
-            )
-            if payload.usage is not None
-            else None
+    @staticmethod
+    def _parse_usage(payload: _ChatCompletionResponsePayload) -> ChatUsage | None:
+        if payload.usage is None:
+            return None
+        return ChatUsage(
+            prompt_tokens=payload.usage.prompt_tokens,
+            completion_tokens=payload.usage.completion_tokens,
+            total_tokens=payload.usage.total_tokens,
         )
-        return payload.choices[0].message.content, usage
 
     @staticmethod
     def _raise_for_status(response: httpx2.Response) -> None:

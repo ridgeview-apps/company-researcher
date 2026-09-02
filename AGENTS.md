@@ -370,13 +370,18 @@ unchanged) purely from this cross-contamination. Since
 `EvaluationDataset` already carries `company_number` and it was already
 threaded through `evaluate_question`/`evaluate_question_hybrid`, the fix
 was small: pass it to their `search_pages` calls the same way
-`investigation_agent.py` does. (`vector_search.py`'s
-`search_pages_by_embedding` has no equivalent company-scoping parameter
-and remains an open gap — currently latent only because Nothing
-Technology's pages have not been embedded; the moment they are, vector
-and hybrid evaluation would be exposed to the same cross-contamination,
-and closing that gap is deliberately left as unstarted follow-up work,
-not silently bundled into this fix.)
+`investigation_agent.py` does. (At this point, `vector_search.py`'s
+`search_pages_by_embedding` had no equivalent company-scoping parameter
+and remained an open gap — currently latent only because Nothing
+Technology's pages had not been embedded; the moment they were, vector
+and hybrid evaluation would be exposed to the same cross-contamination.
+This was deliberately left as unstarted follow-up work rather than
+silently bundled into this fix, and was closed in a later pass —
+`search_pages_by_embedding` now takes the same `company_number` parameter,
+used correctly by both `evaluate_question_by_embedding` and
+`evaluate_question_hybrid`; see README.md's "Close three diagnosed gaps"
+section for that fix's detail. AGENTS.md's own narrative for that pass was
+never separately written up here, which this note corrects.)
 
 Re-measuring after that fix surfaced a second, more interesting latent
 issue, not a regression in the fix itself: Q2's MRR did not return to its
@@ -970,6 +975,167 @@ confirmed unaffected (`status=final`, `claim_type=fact`,
 `evidence_sufficient=true`). See README.md's "Closing the HITL-bypass gap"
 section for the full detail.
 
+The repository was then split into `backend/` (every existing Python
+component) and a new `web/` sibling, trialled on a branch first and kept
+after the full quality gate and a real `docker compose up --build`
+reproduced exactly what had already been verified on `main`, with no real
+pain surfaced. `compose.yaml`, this file, `README.md`, and `docs/` stay at
+the repository root; every backend command (`uv run`, `alembic`, `pytest`,
+`ruff`, `mypy`, `pyright`) now assumes `backend/` as its working directory,
+and `docker compose` needs `--env-file backend/.env` explicitly since
+Compose only auto-loads a `.env` beside `compose.yaml` itself.
+
+An analyst review UI and API milestone is now built on top of that split —
+the project brief's "later analyst-review interface," introduced only now
+that the backend HITL workflow it reviews already exists. It is a first,
+deliberately narrow, review-only slice: it reviews findings the backend has
+already flagged via `human_review_gate`, not a general investigations
+store — `human_review_gate` only ever persists a row when
+`needs_human_review()` is true, so "list investigations" and "list
+pending/decided reviews" are the same `human_reviews` table, not two
+resources. New `backend/src/company_researcher/api/reviews.py` router
+reuses `human_review.py` directly (a new `list_reviews()` function lifted
+out of `cli.py`'s inline query, so the CLI and API share one
+implementation) to expose `GET /reviews?status=`, `GET /reviews/{id}`, and
+`POST /reviews/{id}/decision`; `main.py` now stores a session factory on
+`app.state` behind a `get_session` dependency and enables CORS for the Vite
+dev origin. `web/` is a plain Vite + React + TypeScript app — no
+Next.js/SSR, no router library, no authentication layer, matching this
+project's current single-operator, two-view (list, detail/decision) scope —
+with `ReviewList` (filterable by status, defaulting to `pending`) and
+`ReviewDetailPanel` (claim, flag reason, every citation's quoted supporting
+text, and an approve/edit/reject/request-more-research decision form)
+talking to the API through a typed `api.ts` fetch client. Launching a new
+investigation from the UI was deliberately deferred (`investigate()` takes
+2-16+ seconds and real token cost, which would need a background-job/
+polling layer this review-only slice doesn't need), as was authentication
+and editing a finding's citations (rather than just its claim text).
+Verified with 7 new backend tests against real Postgres via FastAPI's
+`TestClient` (267 passed, 3 deselected), the frontend's `npm run build`
+and `npm run lint` passing cleanly, and by exercising both the live API
+and the UI itself against the real Dockerized stack — which surfaced and
+fixed one real bug, badges rendering with excess whitespace on rows with a
+long `review_reason` string, caused by CSS Grid's default item
+"blockification"/stretch and fixed by moving that row's layout to flex
+rather than patching individual column widths. See README.md's "Analyst
+review UI and API" section for the full detail.
+
+A tool-using baseline — the project brief's second baseline, "General LLM +
+web, instructed to use Companies House" — is now built, chosen as the
+explicitly agreed next step (over deployment, deliberately deferred until
+discussed separately) because it was the more concretely "missing" of the
+two against the project's original scope. Reading `baseline_agent.py`,
+`baseline_comparison.py`, and `llm_client.py` first surfaced that `Citation`
+requires `document_extraction_id`/`page_number`, identifiers that only exist
+once a filing has gone through this project's own OCR pipeline — so a
+baseline that only called Companies House's structured metadata endpoints
+could not produce a comparable citation at all; it needed a tool to read
+actual filing document text. Scoped to Companies House only, not open web
+search (a new provider/API key and non-reproducible results, left as a
+separate, later option) — deliberately agreed before implementation.
+`tool_baseline_agent.py` gives the model four function-calling tools
+(`get_company_profile`, `get_filing_history`, `list_filing_document_pages`,
+`get_filing_document_page_text`) and a bounded (8-round) tool-calling loop,
+built on new tool-calling support added to `llm_client.py`
+(`complete_with_tools_and_usage`, a `ToolAwareChatProvider` protocol,
+OpenAI-compatible tool-call serialization) alongside the existing
+`complete`/`complete_structured` methods, not a change to them. The tools
+reuse `ingest_filing_document`/`extract_filing_document` unchanged, so the
+baseline and the specialized agent share the same data layer and differ
+only in how they search it, matching this project's principle that the
+domain-specific data layer stays separate from the reusable AI architecture.
+Every citation is checked with the same discipline
+`investigation_agent._validate_citations` applies to the specialized agent —
+rejected unless it points at a page this run's own tools actually returned,
+not merely a page that exists somewhere in the corpus. `baseline_comparison.py`
+now runs all three paths (no-tool baseline, tool-using baseline, specialized
+agent) per question.
+
+Built with 8 new tests (4 in `test_llm_client.py` for tool-call request/
+response serialization, 4 in `test_tool_baseline_agent.py` for the loop's
+mechanics, error handling, and round budget, all with fakes — no live
+network calls), then verified with 6 real runs against the real LLM,
+the real Companies House API, and the persisted Gymshark corpus. The
+result is a genuine, if narrow, positive finding for this project's
+central research question, distinct from the earlier no-tool-baseline
+comparison: across four independent real runs of the same fiscal-year-
+disambiguation question this project already diagnosed twice before (once
+for vector search, once for the specialized agent's first, unfixed
+`generate_query`), the tool-using baseline never once cited the correct
+FY2023 filing — despite real tool access, full autonomy, and
+`get_filing_history`'s date fields available to disambiguate by. Every
+citation was grounded (a real page its own tools returned) and passed
+this baseline's own citation-groundedness check every time; the model
+simply picked the wrong filing from the list, the exact failure mode
+`retrieve_evidence_node`'s deterministic
+`document_extraction_ids_for_fiscal_year` restriction was built to close
+for the specialized agent, with no equivalent in a general tool-calling
+loop that decides for itself which filing to open. A second, fiscal-
+year-unambiguous question (FY2025 turnover, only one filing exists) shows
+the contrast: the model reliably opened the correct filing and page, but
+one of its two runs still misread the P&L table's two-column comparative
+layout, citing the FY2024 comparative figure instead of FY2025's — a
+real, verbatim-quoted citation supporting a wrong claim, a fidelity gap
+this baseline has no `_find_quote_mismatches`-equivalent check for,
+deliberately left out of scope for this slice. Token cost across the six
+real runs (15,434–45,283 tokens, mean ~24,000) substantially exceeds both
+the no-tool baseline's ~350-400 tokens and, on several runs, the
+specialized agent's own mean (~7,471 tokens), since each tool round trip
+re-sends the accumulating message history. Wall-clock latency was
+captured for only one of the six runs (6.66s for 3 tool-call rounds via
+the `compare-baseline` CLI) — no broader latency claim is made, since the
+other five runs were measured with a script that did not record timing.
+Deliberately out of scope for this slice: open web search, quote-fidelity
+verification, giving the tool-using baseline the specialized agent's own
+fiscal-year/as-of restrictions (which would defeat the point of measuring
+a *general* agent without them), and folding this baseline into the
+human-calibrated accuracy-scoring or adversarial-injection harnesses. See
+README.md's "A tool-using baseline" section for the full detail and the
+per-run table.
+
+Verifying this milestone before committing it surfaced, and fixed, two real
+cross-company data-scoping bugs — the same class of bug already fixed once
+for `search_pages` (see the Nothing Technology company-scoping note above),
+recurring in two places that fix didn't cover. First,
+`fiscal_year_lookup.py`'s `document_extraction_ids_for_fiscal_year` had no
+`company_number` scoping at all, unlike `search_pages`. This was harmless
+while Gymshark's persisted corpus had no FY2024 filing, but the corpus has
+since grown a genuine one (`made_up_date: "2024-07-31"`, filed
+2025-04-28) — so a single-year question for an unrelated company naming
+"2024" resolved a non-empty, wrong-company extraction id, `retrieve_evidence_node`'s
+empty-list fallback never fired, and retrieval silently returned zero
+pages instead of falling back, exactly reproducing a real test failure
+once tests ran against the real, current corpus rather than a fresh one.
+Fixed by adding an optional `company_number` parameter (mirroring
+`search_pages`'s own), passed at both call sites in
+`investigation_agent.py` (`retrieve_evidence_node` and
+`gather_year_findings_node`), with a new regression test
+(`test_document_extraction_ids_for_fiscal_year_scopes_by_company_number`)
+that plants a second company's same-year filing and confirms it is
+excluded. Second, and found only by deliberately auditing for more of the
+same bug class rather than by any failing test —
+`tool_baseline_agent.py`'s `_get_filing_document_page_text` resolved a page
+by `document_extraction_id`, a value the model supplies directly as a
+tool-call argument, with no check that it belonged to the company under
+investigation; its three sibling tools (`_get_company_profile`,
+`_get_filing_history`, `_list_filing_document_pages`) all filter by
+`context.company_number` and this one did not. Since
+`_validate_tool_citations` only checks that a citation's page is in
+`pages_read`, a hallucinated or misremembered id belonging to a different
+company would have silently returned that company's real page text and
+passed as grounded evidence for the wrong company — untested by the
+milestone's original four tests, since none exercised a second company's
+page existing in the same database. Fixed by joining through
+`FilingDocument`/`Filing` and filtering on `Filing.company_number`,
+matching the sibling tools; verified with a new regression test
+(`test_get_filing_document_page_text_rejects_a_page_belonging_to_another_company`)
+that plants a real page under a second company and confirms the tool
+reports it as not found rather than returning its text. Both fixes were
+verified against the real, live-corpus Postgres instance (280 tests
+passing, including the 3 `real_corpus`-marked drift guards), not just a
+fresh database, since that is precisely the condition that exposed the
+first bug.
+
 Work incrementally. Challenge and refine each step of an agreed milestone
 against the actual codebase and persisted data before implementing it, the
 same way the retrieval evaluation milestone was refined before any schema or
@@ -987,7 +1153,10 @@ deterministic retrieval metrics needed for the baseline.
 ## Engineering conventions
 
 - Use Python 3.13 and `uv` for environments, dependencies, and locking.
-- Keep importable code under `src/company_researcher/` and tests under `tests/`.
+- Keep importable code under `backend/src/company_researcher/` and tests
+  under `backend/tests/`. `web/` (TypeScript/React) is a separate sibling
+  toolchain for the analyst review UI, gated on the Python backend workflow
+  it reviews already existing.
 - Prefer small modules with explicit responsibilities over speculative generic
   abstractions.
 - Use async interfaces for network and database I/O where appropriate.

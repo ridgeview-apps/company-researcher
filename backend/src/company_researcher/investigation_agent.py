@@ -700,29 +700,31 @@ def _build_graph(
         document_extraction_ids = None
         if fiscal_year is not None:
             candidate_ids = await document_extraction_ids_for_fiscal_year(
-                session, fiscal_year
+                session, fiscal_year, company_number=state["company_number"]
             )
-            # An empty result means no filing has an accounting period in
-            # this year -- which happens not only for a genuine reporting
-            # gap, but also when the named year refers to something other
-            # than an accounting period at all (e.g. a charge-creation
-            # date), a case document_extraction_ids_for_fiscal_year cannot
-            # distinguish from the genuine gap case, since it only knows
-            # about made_up_date. Passing an empty list to search_pages
-            # would match zero pages instead of no restriction, silently
-            # discarding real evidence for a question this system can
-            # answer (observed on a real Nothing Technology run: a
-            # question naming "December 2024" as a charge date, not a
-            # fiscal year, retrieved nothing). Falling back to no
-            # restriction accepts a small risk of over-broad retrieval in
-            # exchange for not failing closed on an answerable question;
-            # this is deliberately narrower than a change to
-            # document_extraction_ids_for_fiscal_year itself, which would
-            # also affect gather_year_findings_node's multi-year path,
-            # where an empty result for a genuinely absent year (e.g.
-            # Gymshark's FY2024 gap) must keep reporting
+            # An empty result means this company has no filing with an
+            # accounting period in this year -- which happens not only for
+            # a genuine reporting gap, but also when the named year refers
+            # to something other than an accounting period at all (e.g. a
+            # charge-creation date), a case document_extraction_ids_for_fiscal_year
+            # cannot distinguish from the genuine gap case, since it only
+            # knows about made_up_date. Passing an empty list to
+            # search_pages would match zero pages instead of no
+            # restriction, silently discarding real evidence for a
+            # question this system can answer (observed on a real Nothing
+            # Technology run: a question naming "December 2024" as a
+            # charge date, not a fiscal year, retrieved nothing). Falling
+            # back to no restriction accepts a small risk of over-broad
+            # retrieval in exchange for not failing closed on an answerable
+            # question; this is deliberately narrower than always widening
+            # in gather_year_findings_node's multi-year path, where an
+            # empty result for a genuinely absent year must keep reporting
             # evidence_sufficient=False for that year, not silently widen
-            # to every year's filings.
+            # to every year's filings. (The lookup itself is scoped by
+            # company_number so that "empty" reliably means this company
+            # has no such filing, not that no company in the shared corpus
+            # does -- a real cross-company leak observed once another
+            # company's filing happened to share the named year.)
             document_extraction_ids = candidate_ids or None
         matches = await search_pages(
             session,
@@ -769,7 +771,7 @@ def _build_graph(
                 f"fiscal_year_{year}", run_type="chain", inputs={"fiscal_year": year}
             ) as year_run:
                 document_extraction_ids = await document_extraction_ids_for_fiscal_year(
-                    session, year
+                    session, year, company_number=state["company_number"]
                 )
                 matches = await search_pages(
                     session,
