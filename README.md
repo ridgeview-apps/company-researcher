@@ -9,11 +9,16 @@ Company Researcher is an evidence-driven retrieval-augmented generation
 single-shot RAG pipeline — for controlled, reproducible investigations over
 UK company filings.
 
-This is **not a Companies House chatbot**. Companies House provides a public,
-reproducible stand-in for the private APIs, databases, documents, and audit
-histories commonly found in enterprise AI projects. The long-term value of
-the project is its retrieval, evidence, evaluation, and human-review
-architecture; the public data source should remain replaceable.
+This is **not a Companies House chatbot**. Companies House was chosen
+deliberately as a public, reproducible stand-in for the private APIs,
+databases, document stores, and audit trails real enterprise AI projects
+run against — something a portfolio project can show working end-to-end,
+without access to actual proprietary data. What's actually being
+demonstrated is the retrieval, evidence-checking, evaluation, and
+human-review architecture above it, which is intentionally source-agnostic:
+swapping Companies House for an internal API, database, or document store
+would change the ingestion layer only, not the retrieval/agent/evaluation/
+HITL system built on top of it.
 
 Every claim the agent makes is either backed by a citation verified, word
 for word, against a real filing page, or the agent refuses to answer. The
@@ -80,10 +85,10 @@ Filing PDFs ──▶ Tesseract OCR ──▶ page text + pgvector embeddings
                       structured Finding, with citations
 ```
 
-Companies House is deliberately confined to the ingestion layer — retrieval,
-evidence-checking, evaluation, and human review are written to be swappable
-onto an internal API, database, or document store instead (see
-[`docs/project-brief.md`](docs/project-brief.md)).
+The diagram bears that out: Companies House only touches the ingestion
+layer, top-left. Nothing below it is Companies-House-specific (see
+[`docs/project-brief.md`](docs/project-brief.md) for the original brief
+this constraint was designed against).
 
 ## Known limitations and deliberately deferred work
 
