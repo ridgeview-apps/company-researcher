@@ -1,7 +1,13 @@
 # Company Researcher
 
-Company Researcher is an evidence-driven system for controlled, reproducible
-investigations over UK company filings.
+**Built with:** Python · FastAPI · PostgreSQL + pgvector · LangGraph ·
+OpenAI-compatible LLM & embeddings APIs · TypeScript · React · Docker ·
+GitHub Actions CI
+
+Company Researcher is an evidence-driven retrieval-augmented generation
+(RAG) system — specifically, a multi-step LangGraph agent, not a
+single-shot RAG pipeline — for controlled, reproducible investigations over
+UK company filings.
 
 This is **not a Companies House chatbot**. Companies House provides a public,
 reproducible stand-in for the private APIs, databases, documents, and audit
