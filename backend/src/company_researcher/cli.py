@@ -42,7 +42,6 @@ from company_researcher.db.models import (
     DocumentExtraction,
     Filing,
     FilingDocument,
-    HumanReview,
 )
 from company_researcher.db.session import create_database_engine, create_session_factory
 from company_researcher.document_ingestion import (
@@ -56,6 +55,7 @@ from company_researcher.human_review import (
     HumanReviewError,
     ReviewDecision,
     apply_review_decision,
+    list_reviews,
     review_reason,
 )
 from company_researcher.ingestion import ingest_company
@@ -718,10 +718,7 @@ async def list_reviews_command(status: str | None) -> str:
     try:
         session_factory = create_session_factory(engine)
         async with session_factory() as session:
-            statement = select(HumanReview).order_by(HumanReview.created_at)
-            if status is not None:
-                statement = statement.where(HumanReview.status == status)
-            reviews = (await session.scalars(statement)).all()
+            reviews = await list_reviews(session, status=status)
     finally:
         await engine.dispose()
 

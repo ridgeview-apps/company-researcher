@@ -45,6 +45,14 @@
       "envFile": "${workspaceFolder}/backend/.env",
       "console": "integratedTerminal",
       "justMyCode": true
+    },
+    {
+      "name": "Analyst Review UI (Chrome)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/web",
+      "preLaunchTask": "web: dev server"
     }
   ],
   "inputs": [

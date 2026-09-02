@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     app_name: str = "Company Researcher"
     app_environment: Literal["local", "test", "production"] = "local"
     artifact_root: Path = Path("data/artifacts")
+    cors_allowed_origins: list[str] = ["http://localhost:5173"]
 
     database_url: str = (
         "postgresql+asyncpg://company_researcher:company_researcher@"
