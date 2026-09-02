@@ -14,6 +14,8 @@ from company_researcher.llm_client import (
     ChatRateLimitError,
     ChatResponseError,
     ChatUsage,
+    ToolCall,
+    ToolDefinition,
 )
 
 
@@ -277,3 +279,177 @@ def test_from_settings_requires_api_key() -> None:
 
     with pytest.raises(ChatConfigurationError):
         ChatClient.from_settings(settings)
+
+
+_GET_WEATHER_TOOL = ToolDefinition(
+    name="get_weather",
+    description="Get the current weather for a city.",
+    parameters={
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": False,
+    },
+)
+
+
+@pytest.mark.asyncio
+async def test_complete_with_tools_sends_tool_definitions_and_returns_requested_calls() -> (
+    None
+):
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        assert body["tools"] == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the current weather for a city.",
+                    "parameters": _GET_WEATHER_TOOL.parameters,
+                },
+            }
+        ]
+        assert "response_format" not in body
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_weather",
+                                        "arguments": json.dumps({"city": "London"}),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 20,
+                    "completion_tokens": 6,
+                    "total_tokens": 26,
+                },
+            },
+            request=request,
+        )
+
+    async with create_client(handler) as client:
+        turn, usage = await client.complete_with_tools_and_usage(
+            [ChatMessage(role="user", content="What's the weather in London?")],
+            [_GET_WEATHER_TOOL],
+        )
+
+    assert turn.content is None
+    assert turn.tool_calls == (
+        ToolCall(id="call-1", name="get_weather", arguments={"city": "London"}),
+    )
+    assert usage == ChatUsage(prompt_tokens=20, completion_tokens=6, total_tokens=26)
+
+
+@pytest.mark.asyncio
+async def test_complete_with_tools_returns_no_tool_calls_when_model_answers_directly() -> (
+    None
+):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "It's sunny."}}
+                ]
+            },
+            request=request,
+        )
+
+    async with create_client(handler) as client:
+        turn, _usage = await client.complete_with_tools_and_usage(
+            [ChatMessage(role="user", content="What's the weather in London?")],
+            [_GET_WEATHER_TOOL],
+        )
+
+    assert turn.content == "It's sunny."
+    assert turn.tool_calls == ()
+
+
+@pytest.mark.asyncio
+async def test_complete_with_tools_rejects_empty_messages_and_empty_tools() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise AssertionError("should not send a request")
+
+    async with create_client(handler) as client:
+        with pytest.raises(ValueError, match="messages must not be empty"):
+            await client.complete_with_tools_and_usage([], [_GET_WEATHER_TOOL])
+        with pytest.raises(ValueError, match="tools must not be empty"):
+            await client.complete_with_tools_and_usage(
+                [ChatMessage(role="user", content="Hello")], []
+            )
+
+
+@pytest.mark.asyncio
+async def test_complete_with_tools_serializes_a_tool_round_trip_correctly() -> None:
+    """A prior assistant tool-call message and its tool-result reply serialize to the expected shape."""
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        assert body["messages"] == [
+            {"role": "user", "content": "What's the weather in London?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": json.dumps({"city": "London"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": json.dumps({"temperature_c": 18}),
+                "tool_call_id": "call-1",
+            },
+        ]
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "It's 18C."}}]
+            },
+            request=request,
+        )
+
+    async with create_client(handler) as client:
+        turn, _usage = await client.complete_with_tools_and_usage(
+            [
+                ChatMessage(role="user", content="What's the weather in London?"),
+                ChatMessage(
+                    role="assistant",
+                    content="",
+                    tool_calls=(
+                        ToolCall(
+                            id="call-1",
+                            name="get_weather",
+                            arguments={"city": "London"},
+                        ),
+                    ),
+                ),
+                ChatMessage(
+                    role="tool",
+                    content=json.dumps({"temperature_c": 18}),
+                    tool_call_id="call-1",
+                ),
+            ],
+            [_GET_WEATHER_TOOL],
+        )
+
+    assert turn.content == "It's 18C."

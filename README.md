@@ -46,6 +46,12 @@ didn't work, not just what shipped.
   "unsupported" class) and deliberately kept out of the live pipeline —
   it isn't yet reliable enough on its own motivating failure cases. See
   [Calibrating an LLM judge](#calibrating-an-llm-judge).
+- **A general LLM given real tool access to Companies House — not just
+  ungrounded — still got the fiscal year wrong 4 out of 4 real runs** on
+  the same near-duplicate-filing question this project's specialized agent
+  had to add a deterministic fix for, showing that engineered retrieval
+  restrictions, not just tool access, are doing real work. See
+  [A tool-using baseline: "General LLM + Companies House"](#a-tool-using-baseline-general-llm--companies-house).
 
 **Architecture:**
 
@@ -128,6 +134,12 @@ can:
   below), and score both baselines' real answers for factual accuracy
   against hand-verified ground truth (see
   [Human-calibrated factual-accuracy scoring](#human-calibrated-factual-accuracy-scoring)
+  below); and
+- compare a third baseline that gives a general LLM real function-calling
+  tool access to Companies House's own profile, filing history, and
+  on-demand OCR of any filing document, checking its citations against
+  the pages its own tool calls actually returned (see
+  [A tool-using baseline: "General LLM + Companies House"](#a-tool-using-baseline-general-llm--companies-house)
   below); and
 - pause a finding that is an interpretation, or that reports insufficient
   evidence, for a human analyst to approve, edit, reject, or flag for
@@ -1643,7 +1655,9 @@ uv run company-researcher compare-baseline evaluation/nothing_technology_retriev
 
 Deliberately out of scope for this slice, flagged rather than silently
 skipped: the brief's second baseline ("General LLM + web," which needs
-real tool/browsing integration); automated or LLM-judge factual-accuracy
+real tool/browsing integration - since built, see
+[A tool-using baseline: "General LLM + Companies House"](#a-tool-using-baseline-general-llm--companies-house)
+below); automated or LLM-judge factual-accuracy
 scoring (factual accuracy below was checked by direct comparison against
 each question's already-written, manually-verified `note` field);
 material-event recall and completeness scoring; temporal/future-leakage
@@ -1862,6 +1876,205 @@ specialized agent is slower and costs more but is more auditable" into a
 concrete, prioritizable list of *why* it refuses when it shouldn't. The
 project brief's fuller comparison (a second, real-tool-using baseline;
 temporal-leakage testing) remains open, deliberately unstarted work.
+
+## A tool-using baseline: "General LLM + Companies House"
+
+The project brief's second baseline - "General LLM + web, instructed to
+use Companies House" - is now built, closing the gap the comparison
+above flagged as open. Reading `baseline_agent.py`, `baseline_comparison.py`,
+and `llm_client.py` first (not assumed) surfaced a real design
+constraint before any code was written: `Citation` requires
+`document_extraction_id`/`page_number`, identifiers that only exist once
+a filing has gone through this project's own OCR pipeline. A baseline
+that only called Companies House's structured profile/filing-history
+endpoints could not produce a citation in that shape at all, so the tool
+set had to include a way to read an actual filing document's text, not
+just its metadata.
+
+This first slice is deliberately scoped to Companies House itself, not
+open web search: true "web" access would need a new search-provider
+dependency and API key, and would make results non-reproducible run to
+run (search results change over time) - a real, but separately-agreed,
+extension left open rather than bundled in here.
+[`tool_baseline_agent.py`](src/company_researcher/tool_baseline_agent.py)
+gives the model four function-calling tools and lets it decide for
+itself what to fetch and read, in a bounded loop (8 rounds) driven by
+new tool-calling support added to `llm_client.py`
+(`complete_with_tools_and_usage`, a `ToolAwareChatProvider` protocol,
+and OpenAI-compatible tool-call request/response serialization,
+alongside the existing `complete`/`complete_structured` methods, not a
+change to them):
+
+- `get_company_profile` and `get_filing_history` - the company's
+  structured profile and filing list (transaction ID, category, type,
+  description, date, and whether a document exists).
+- `list_filing_document_pages` - downloads and OCRs one filing's
+  document on demand (reusing `ingest_filing_document` and
+  `extract_filing_document` unchanged, the same idempotent functions
+  the ordinary ingestion CLI commands use), returning a page count and
+  a short snippet of each page rather than the full text, so the model
+  skims before committing context budget to a full read.
+- `get_filing_document_page_text` - the full OCR text of one specific
+  page.
+
+Reusing the existing ingestion/OCR pipeline unchanged (rather than a
+separate, parallel fetch path) matches this project's principle that
+the domain-specific data layer stays swappable and separate from the
+reusable AI architecture being compared - here, the baseline and the
+specialized agent literally share the same data layer, differing only
+in how they search it.
+
+Every citation is checked with the same discipline
+`investigation_agent._validate_citations` applies to the specialized
+agent's citations: rejected unless it points at a page this specific
+run's tools actually returned via `get_filing_document_page_text`, not
+merely a page that exists somewhere in the corpus (the weaker check
+`_citation_realism` applies to the no-tool baseline, which has no
+retrieved-page set to check against). A citation to any other page
+raises `ToolBaselineAgentError`, mirroring `InvestigationAgentError`.
+`baseline_comparison.py`'s `QuestionComparison` and `compare_question`
+now run all three paths - no-tool baseline, tool-using baseline,
+specialized agent - per question, and `compare-baseline`'s report
+prints all three.
+
+### Observed real-run result
+
+Run for real against the persisted Gymshark corpus, not assumed to work
+from the unit tests alone (8 new tests cover the tool-calling request/
+response serialization and the loop's mechanics, error handling, and
+round budget with fakes - 4 in `test_llm_client.py`, 4 in
+`test_tool_baseline_agent.py`). Six real runs across two questions:
+
+| Question | Run | Cited extraction | Correct? |
+| --- | --- | --- | --- |
+| FY2023 going-concern | 1 | 44 (amended FY2022) | No |
+| FY2023 going-concern | 2 | 43 (original FY2022) | No |
+| FY2023 going-concern | 3 | 44 and 43 (both FY2022) | No |
+| FY2023 going-concern | 4 | 44 (amended FY2022) | No |
+| FY2025 turnover (direct call) | 1 | 33 page 20 (correct page) | Yes - £490,142,000 |
+| FY2025 turnover (via `compare-baseline`) | 1 | 33 page 20 (correct page) | No - read the wrong column, £458,624,000 |
+
+The going-concern question is the same one used throughout this
+project's fiscal-year-disambiguation work (see "Fixing the
+fiscal-year-disambiguation leak" and "Closing the residual leak with
+structured filing metadata" above) - `document_extraction_id=42` is the
+correct FY2023 filing, `43` and `44` are the original and amended FY2022
+filings, whose going-concern boilerplate is nearly word-for-word
+identical. Across four independent real runs, the tool-using baseline
+**never once cited the correct FY2023 filing** - despite having full
+autonomy, real tool access, and `get_filing_history`'s date/description
+fields available to disambiguate by. This is not a mechanical bug: each
+run's citations were grounded (real pages the model's own tool calls
+actually returned) and passed this baseline's own citation-groundedness
+check every time. The model simply picked the wrong filing from the
+list, the same near-duplicate-boilerplate confusion this project already
+diagnosed for vector search (dense embeddings can't tell which year's
+instance of a heavily templated disclosure they're looking at) and for
+the specialized agent's own first, unfixed version of `generate_query`
+- except here there is no engineered fix: `retrieve_evidence_node`'s
+deterministic `document_extraction_ids_for_fiscal_year` restriction,
+built specifically to close this exact failure mode for the specialized
+agent, has no equivalent in a general tool-calling loop that decides
+for itself which filing to open.
+
+The turnover question, which has no near-duplicate filing to confuse it
+with (only one filing reports FY2025 figures at all), is a useful
+contrast: the model correctly identified and opened the right filing and
+the right page both times. But the second run still got the figure
+itself wrong - the page's P&L table lists two columns, `490,142`
+(FY2025) and `458,624` (the FY2024 comparative), and the model read the
+comparative column instead of the current year's. A citation whose
+`supporting_text` was real, verbatim page text ("Turnover 3 490,142
+458,624") but whose claim drew the wrong number from it - a fidelity
+gap this baseline has no equivalent check for, since it has no
+`_find_quote_mismatches`-style verification step at all (deliberately
+out of scope for this slice; see "Deliberately out of scope" below).
+
+This is a genuine, if narrow, positive result for this project's central
+research question, distinct from the earlier no-tool-baseline comparison:
+it is not merely "grounded beats ungrounded" (the earlier result), but
+"this project's specific engineered retrieval mechanisms - fiscal-year
+scoping in particular - measurably outperform a general tool-using agent
+given identical underlying data and identical tools to fetch it with."
+Real tool access and model autonomy did not substitute for the
+deterministic, structured-metadata-based restriction this project built
+after diagnosing the same failure mode twice before.
+
+Token cost, measured across the six real runs above: 15,434 to 45,283
+tokens per question (mean ~24,000), across 3-6 tool-call rounds -
+substantially more than both the no-tool baseline's ~350-400 tokens and,
+on several runs, more than the specialized agent's own mean (~7,471
+tokens per the earlier comparison), because each tool round trip
+re-sends the accumulating message history. Wall-clock latency was only
+captured for one of the six runs (the `compare-baseline` CLI run:
+6.66 seconds for 3 tool-call rounds) - the other five were measured via
+a direct script that did not record timing, so no broader latency claim
+is made here; measuring it properly is left for a future, dedicated run
+rather than estimated.
+
+Deliberately out of scope for this slice, flagged rather than silently
+skipped: open web search beyond Companies House (a separate, later
+option, not attempted here); quote-fidelity verification equivalent to
+`_find_quote_mismatches` (the column-misread failure above shows this
+baseline can cite a real, verbatim quote in support of a claim the quote
+doesn't actually establish - a distinct gap from anything
+`_validate_tool_citations` checks); a fiscal-year- or as-of-aware
+restriction mechanism (deliberately withheld - giving the tool-using
+baseline the specialized agent's own engineered restrictions would
+defeat the point of measuring what a *general* tool-using agent does
+without them); and folding this baseline into the human-calibrated
+factual-accuracy scoring or adversarial-injection harnesses above (both
+remain scoped to the no-tool baseline and the specialized agent only).
+
+### Two cross-company scoping bugs found during verification
+
+Verifying this milestone before committing it - re-running the full suite
+against the real, live-corpus Postgres instance rather than a fresh one,
+then deliberately auditing for more instances of the exact bug class
+already fixed once for `search_pages` (see "Scoping retrieval to one
+company" above) - surfaced two more real, previously-undiagnosed bugs,
+both now fixed.
+
+First, `fiscal_year_lookup.py`'s `document_extraction_ids_for_fiscal_year`
+had no `company_number` scoping at all, unlike `search_pages`. This was
+harmless while Gymshark's persisted corpus had no FY2024 filing, but the
+corpus has since grown a genuine one (`made_up_date: "2024-07-31"`, filed
+2025-04-28) - so a single-year question for an unrelated company naming
+"2024" resolved a non-empty but wrong-company extraction id,
+`retrieve_evidence_node`'s empty-list fallback never fired, and retrieval
+silently returned zero pages instead of falling back to unrestricted
+search - reproducing as a real, observed test failure once the suite ran
+against the real, current corpus. Fixed by adding an optional
+`company_number` parameter (mirroring `search_pages`'s own), passed at
+both call sites in `investigation_agent.py` (`retrieve_evidence_node` and
+`gather_year_findings_node`), with a new regression test
+(`test_document_extraction_ids_for_fiscal_year_scopes_by_company_number`)
+that plants a second company's same-year filing and confirms it is
+excluded from the first company's results.
+
+Second, found only by deliberately auditing for the same bug class rather
+than by any failing test: `tool_baseline_agent.py`'s
+`_get_filing_document_page_text` resolved a page by
+`document_extraction_id` - a value the model supplies directly as a
+tool-call argument - with no check that it belonged to the company under
+investigation. Its three sibling tools (`_get_company_profile`,
+`_get_filing_history`, `_list_filing_document_pages`) all filter by
+`context.company_number`; this one did not. Since
+`_validate_tool_citations` only checks that a citation's page is in
+`pages_read`, a hallucinated or misremembered id belonging to a different
+company would have silently returned that company's real page text and
+passed as grounded evidence for the wrong company - untested by this
+milestone's original four tests, since none exercised a second company's
+page existing in the same database. Fixed by joining through
+`FilingDocument`/`Filing` and filtering on `Filing.company_number`,
+matching the sibling tools, with a new regression test
+(`test_get_filing_document_page_text_rejects_a_page_belonging_to_another_company`)
+that plants a real page under a second company and confirms the tool
+reports it as not found rather than returning its text.
+
+Both fixes were verified against the real corpus (280 tests passing,
+including the 3 `real_corpus`-marked drift guards), the same condition
+that exposed the first bug, not just a fresh database.
 
 ## Human-in-the-loop review
 
@@ -3001,6 +3214,7 @@ unstarted, deliberately, not overlooked.
 │   │   ├── pdf_extraction.py           # Page-aware local PDF OCR
 │   │   ├── query_construction.py       # Deterministic stopword-removal query derivation
 │   │   ├── retrieval_evaluation.py     # Recall@K / MRR scoring against labelled data
+│   │   ├── tool_baseline_agent.py      # Tool-using "General LLM + Companies House" baseline
 │   │   └── vector_search.py            # pgvector cosine-distance page search
 │   ├── tests/                          # Focused unit and API tests
 │   ├── .env.example                    # Safe configuration template
