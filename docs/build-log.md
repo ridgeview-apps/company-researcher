@@ -35,7 +35,7 @@ commit the key to Git.
 
 ## Initial setup
 
-The Python application lives under [`backend/`](backend/), as a sibling of
+The Python application lives under [`backend/`](../backend/), as a sibling of
 the (future) TypeScript analyst UI under `web/`. Every `uv run`, `alembic`,
 `pytest`, `ruff`, `mypy`, and `pyright` command below assumes you have run
 `cd backend` first — equivalently, prefix any of them with `uv run
@@ -294,7 +294,7 @@ uv run company-researcher evaluate-retrieval
 ```
 
 Without an argument, the command evaluates
-[`evaluation/gymshark_retrieval_questions.json`](evaluation/gymshark_retrieval_questions.json):
+[`evaluation/gymshark_retrieval_questions.json`](../backend/evaluation/gymshark_retrieval_questions.json):
 a small, manually labelled set of retrieval questions over Gymshark Ltd's
 persisted accounts filings, including an original/amended filing pair. Each
 question's text is matched against `document_pages` using a
@@ -306,11 +306,11 @@ Reciprocal Rank per question and averaged across the dataset.
 By default the command issues each question's hand-picked `query` field. Pass
 `--query-source derived` to instead ignore `query` and derive one from `text`
 with `derive_query()` — a fixed, deterministic stopword-removal rule defined
-in [`query_construction.py`](src/company_researcher/query_construction.py)
+in [`query_construction.py`](../backend/src/company_researcher/query_construction.py)
 that depends only on the question text, never on which pages are known to be
 relevant, so it cannot be tuned to a specific answer. Pass `--query-source
 derived-idf` for a second deterministic strategy,
-[`derive_discriminative_query()`](src/company_researcher/discriminative_query.py),
+[`derive_discriminative_query()`](../backend/src/company_researcher/discriminative_query.py),
 which further ranks `derive_query()`'s content words by document frequency
 across every persisted document page and keeps only the rarest few:
 
@@ -382,7 +382,7 @@ approach generalizes to a genuinely new, unseen question.
 
 **Derived query, from `derive_query(text)`** (a fixed stopword-removal rule,
 applied identically to all six questions with no knowledge of which pages are
-relevant — see [`query_construction.py`](src/company_researcher/query_construction.py)):
+relevant — see [`query_construction.py`](../backend/src/company_researcher/query_construction.py)):
 
 | Question | Recall@5 | Recall@10 | Reciprocal rank |
 | --- | --- | --- | --- |
@@ -561,7 +561,7 @@ to get both kinds of precision the other search alone lacks.
 
 ## Measure the hybrid retrieval baseline
 
-[`hybrid_search.py`](src/company_researcher/hybrid_search.py) combines the
+[`hybrid_search.py`](../backend/src/company_researcher/hybrid_search.py) combines the
 lexical and vector rankings above with Reciprocal Rank Fusion (RRF), scoring
 each page `sum(1 / (k + rank))` (k=60) across whichever ranking(s) it appears
 in. RRF combines by rank position rather than raw score deliberately:
@@ -643,7 +643,7 @@ created 18 December 2024 naming Banco Santander, S.A. as security agent,
 and three more created 1 July 2026 naming a different security agent,
 Ocean II PLO LLC.
 
-[`evaluation/nothing_technology_retrieval_questions.json`](evaluation/nothing_technology_retrieval_questions.json)
+[`evaluation/nothing_technology_retrieval_questions.json`](../backend/evaluation/nothing_technology_retrieval_questions.json)
 is a second hand-labelled evaluation dataset, built with the identical
 methodology as Gymshark's: relevant pages identified manually by reading
 the real, persisted OCR page text, hand-tuned queries chosen by measuring
@@ -745,11 +745,11 @@ uv run company-researcher investigate "What did the directors identify as Gymsha
 
 Run with no argument to use that same question as the default. The command
 runs a small [LangGraph](https://github.com/langchain-ai/langgraph)
-`StateGraph` ([`investigation_agent.py`](src/company_researcher/investigation_agent.py))
+`StateGraph` ([`investigation_agent.py`](../backend/src/company_researcher/investigation_agent.py))
 with three linear nodes:
 
 1. **`generate_query`** — an LLM call (via
-   [`llm_client.py`](src/company_researcher/llm_client.py), an async
+   [`llm_client.py`](../backend/src/company_researcher/llm_client.py), an async
    OpenAI-compatible chat-completion client mirroring
    `embeddings_client.py`'s shape) turns the question into a short lexical
    search query, the same role a human played when hand-tuning the
@@ -1305,11 +1305,11 @@ for a future, deliberately scoped pass rather than solved here.
 
 ## Scoping retrieval to one company
 
-`search_pages()` in [`lexical_search.py`](src/company_researcher/lexical_search.py)
+`search_pages()` in [`lexical_search.py`](../backend/src/company_researcher/lexical_search.py)
 now takes an optional `company_number` parameter, joining
 `DocumentPage -> DocumentExtraction -> FilingDocument -> Filing` to filter on
 `Filing.company_number` (this join path was verified against
-[`db/models.py`](src/company_researcher/db/models.py) before writing the
+[`db/models.py`](../backend/src/company_researcher/db/models.py) before writing the
 query, not assumed). It defaults to `None` (no restriction), the same
 no-op-by-default pattern the fiscal-year restriction established. At the
 point this parameter was added, only Gymshark was persisted, so
@@ -1321,7 +1321,7 @@ turned out to matter for real the moment a second company was ingested —
 see below.
 
 `investigate()` in
-[`investigation_agent.py`](src/company_researcher/investigation_agent.py)
+[`investigation_agent.py`](../backend/src/company_researcher/investigation_agent.py)
 now requires a `company_number` argument, threaded through
 `InvestigationState` to both `retrieve_evidence_node` and
 `gather_year_findings_node`, which pass it to `search_pages` alongside
@@ -1456,12 +1456,12 @@ question? This is the first, deliberately narrow slice of that comparison
 tools at all), reusing the two hand-labelled evaluation datasets already
 built rather than a third, and no automated factual-accuracy scoring.
 
-[`baseline_agent.py`](src/company_researcher/baseline_agent.py) answers a
+[`baseline_agent.py`](../backend/src/company_researcher/baseline_agent.py) answers a
 question with a single LLM call and no retrieval, reusing `Finding` -
 the exact structured output the specialized agent produces - so a
 baseline citation attempt can be checked the same way any other citation
 would be, rather than assuming it simply has none.
-[`baseline_comparison.py`](src/company_researcher/baseline_comparison.py)
+[`baseline_comparison.py`](../backend/src/company_researcher/baseline_comparison.py)
 runs both the baseline and the real `investigate()` agent for each
 question in a dataset, measuring latency for each and checking every
 baseline citation against real, persisted `DocumentPage` rows - a fully
@@ -1740,7 +1740,7 @@ open web search: true "web" access would need a new search-provider
 dependency and API key, and would make results non-reproducible run to
 run (search results change over time) - a real, but separately-agreed,
 extension left open rather than bundled in here.
-[`tool_baseline_agent.py`](src/company_researcher/tool_baseline_agent.py)
+[`tool_baseline_agent.py`](../backend/src/company_researcher/tool_baseline_agent.py)
 gives the model four function-calling tools and lets it decide for
 itself what to fetch and read, in a bounded loop (8 rounds) driven by
 new tool-calling support added to `llm_client.py`
@@ -2060,7 +2060,7 @@ shape exactly - a dataset loader, a per-example scorer, and a
 
 ### The calibration dataset
 
-[`evaluation/citation_entailment_judgments.json`](evaluation/citation_entailment_judgments.json)
+[`evaluation/citation_entailment_judgments.json`](../backend/evaluation/citation_entailment_judgments.json)
 has 14 `(claim, cited excerpt, human verdict)` examples, built the same
 way this project's other evaluation datasets are: by hand-reading real,
 persisted Gymshark OCR page text, not invented. Several examples
@@ -2275,7 +2275,7 @@ migrations — that a mock cannot faithfully reproduce. The known limitation is
 that these tests currently share the same development database as manually
 ingested evaluation data, rather than an isolated or ephemeral test database;
 they rely on scoped cleanup and deliberately distinctive fixture data (see
-[`test_lexical_search.py`](tests/test_lexical_search.py)) to avoid colliding
+[`test_lexical_search.py`](../backend/tests/test_lexical_search.py)) to avoid colliding
 with it. A dedicated test database, or wrapping each test in a transaction
 that is rolled back afterwards, would be the more rigorous fix. Start the
 database before running the suite:
@@ -2291,8 +2291,8 @@ uv run pytest
 ```
 
 Three tests are marked `real_corpus`
-([`test_retrieval_evaluation.py`](tests/test_retrieval_evaluation.py)'s and
-[`test_judge_calibration.py`](tests/test_judge_calibration.py)'s "resolves
+([`test_retrieval_evaluation.py`](../backend/tests/test_retrieval_evaluation.py)'s and
+[`test_judge_calibration.py`](../backend/tests/test_judge_calibration.py)'s "resolves
 ... against real data" tests) because they deliberately guard against the
 hand-labelled evaluation datasets drifting from the real, manually-ingested
 Gymshark and Nothing Technology corpus -- not a synthetic fixture, the
@@ -2343,7 +2343,7 @@ uv run ruff format .
 
 ### Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs two independent
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs two independent
 jobs on every push and pull request against `main`, matching `backend/` and
 `web/`'s separate toolchains. The `backend` job runs this exact pipeline --
 lint, format check, type check, then `uv run pytest` (whose default marker
@@ -2454,7 +2454,7 @@ protected against a manipulated model:
 
 ### Deterministic guardrail tests
 
-[`test_adversarial_injection.py`](tests/test_adversarial_injection.py) uses
+[`test_adversarial_injection.py`](../backend/tests/test_adversarial_injection.py) uses
 the same `FakeChatClient` pattern `test_investigation_agent.py` already
 established to simulate outputs a *successfully injected* model might
 produce, without needing a real LLM call, and asserts what the pipeline
@@ -2476,11 +2476,11 @@ deterministic test in this project.
 
 ### Real-LLM verification: hand-built adversarial cases
 
-[`evaluation/adversarial_injection_cases.json`](evaluation/adversarial_injection_cases.json)
+[`evaluation/adversarial_injection_cases.json`](../backend/evaluation/adversarial_injection_cases.json)
 is a small, hand-authored set of 7 cases, each a benign investigation
 question over a synthetic filing page carrying an embedded injection
 payload, run for real against the real LLM with
-[`adversarial_injection.py`](src/company_researcher/adversarial_injection.py)
+[`adversarial_injection.py`](../backend/src/company_researcher/adversarial_injection.py)
 and the `test-injection` CLI command - the same manual, documented-real-run
 pattern as `calibrate-judge`/`compare-baseline`, deliberately kept outside
 automated CI for the same reason (it costs real money per call). Each
@@ -3026,7 +3026,7 @@ This project's original two-week plan named "Day 14: deployment/
 documentation/portfolio polish," with a brief early note about "potentially
 AWS deployment" -- never committed to, and treated as one option among
 several rather than a decision already made (see
-[`docs/project-brief.md`](docs/project-brief.md)).
+[`docs/project-brief.md`](project-brief.md)).
 
 A concrete AWS deployment was designed in detail before any of it was
 built: RDS PostgreSQL (with the `pgvector` extension) for the database, App

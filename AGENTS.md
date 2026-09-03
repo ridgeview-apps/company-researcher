@@ -46,7 +46,7 @@ Built and measured:
   `web/`.
 
 What was deliberately not built, and why, is consolidated in the root
-[README's "Known limitations and deliberately deferred work"](../README.md#known-limitations-and-deliberately-deferred-work)
+[README's "Known limitations and deliberately deferred work"](README.md#known-limitations-and-deliberately-deferred-work)
 section (a filing structurally lacking a disclosure, one retrieval-precision
 gap, the entailment judge's live reintegration, one surviving adversarial
 case, Made.com, a second general-LLM baseline, AWS deployment, and the
