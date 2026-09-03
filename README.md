@@ -71,24 +71,42 @@ for human review, before any decision was made. See
 
 ## Architecture
 
-```text
-Companies House API ──▶ PostgreSQL (structured facts, filings, provenance)
-Filing PDFs ──▶ Tesseract OCR ──▶ page text + pgvector embeddings
-                                        │
-                    lexical (ts_rank) ──┼── vector (cosine) ── hybrid (RRF)
-                                        ▼
-                    LangGraph investigation agent:
-                    generate query → retrieve evidence → synthesize finding
-                    → validate citations → verify quotes → HITL review gate
-                                        │
-                                        ▼
-                      structured Finding, with citations
+```mermaid
+flowchart TD
+    CH["Companies House API"] --> DB[("PostgreSQL<br/>structured facts, filings, provenance")]
+    PDF["Filing PDFs"] --> OCR["Tesseract OCR"] --> PAGES["page text + pgvector embeddings"]
+
+    PAGES --> LEX["lexical (ts_rank)"]
+    PAGES -.-> VEC["vector (cosine)"]
+    LEX -.-> HYB["hybrid (RRF)"]
+    VEC -.-> HYB
+
+    LEX --> GQ
+
+    subgraph AGENT ["LangGraph investigation agent"]
+        GQ["generate query"] --> RE["retrieve evidence"] --> SF["synthesize finding<br/>(validates citations, verifies quotes)"] --> HR["HITL review gate"]
+    end
+
+    HR --> OUT["structured Finding, with citations"]
 ```
 
+Dashed arrows mark vector and hybrid retrieval as evaluation-only baselines,
+not part of the live pipeline: lexical search wins on this project's
+measured corpus, so it's the only retrieval the agent itself calls (see
+[retrieval evaluation](docs/build-log.md) for the measured comparison). A
+question naming two or more fiscal years takes a per-year retrieve/
+synthesize branch before a final aggregation pass, rather than the single
+pass shown above — see [`docs/architecture.md`](docs/architecture.md) for
+the full agent graph.
+
 The diagram bears that out: Companies House only touches the ingestion
-layer, top-left. Nothing below it is Companies-House-specific (see
+layer, at the top. Nothing below it is Companies-House-specific (see
 [`docs/project-brief.md`](docs/project-brief.md) for the original brief
 this constraint was designed against).
+
+For the full database schema and the investigation agent's complete node
+graph — generated from the code rather than simplified for prose — see
+[`docs/architecture.md`](docs/architecture.md).
 
 ## Known limitations and deliberately deferred work
 
