@@ -32,21 +32,7 @@ async def search_pages_by_embedding(
     limit: int,
     company_number: str | None = None,
 ) -> list[PageMatch]:
-    """Rank document pages by cosine distance to `query_embedding`.
-
-    Only searches embeddings persisted under the given provider/model/
-    dimensions configuration: vectors from different models are not
-    comparable, so mixing them would produce a meaningless ranking.
-
-    `company_number`, when given, restricts candidates to pages belonging
-    to that company's filings, joining DocumentPage -> DocumentExtraction ->
-    FilingDocument -> Filing to reach `Filing.company_number` - mirroring
-    `search_pages`'s own company-scoping join in `lexical_search.py`.
-    Defaults to no restriction, so an existing caller that omits it is
-    unaffected; this was a latent gap (this project's evaluation datasets
-    were single-company until Nothing Technology's pages were also
-    embedded) rather than a currently-observed cross-company leak.
-    """
+    """Rank document pages by cosine distance to `query_embedding`."""
     distance = PageEmbedding.embedding.cosine_distance(query_embedding).label(
         "distance"
     )
@@ -59,12 +45,17 @@ async def search_pages_by_embedding(
         )
         .join(DocumentPage, PageEmbedding.document_page_id == DocumentPage.id)
         .where(
+            # Only this provider/model/dimensions: vectors from different
+            # models aren't comparable, so mixing them would be meaningless.
             DocumentEmbedding.provider == provider,
             DocumentEmbedding.model == model,
             DocumentEmbedding.dimensions == dimensions,
         )
     )
     if company_number is not None:
+        # Mirrors search_pages's company-scoping join in lexical_search.py.
+        # Defaults to no restriction (a latent gap while evaluation data was
+        # single-company, not a currently-observed cross-company leak).
         statement = (
             statement.join(
                 DocumentExtraction,

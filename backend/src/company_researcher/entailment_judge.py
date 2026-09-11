@@ -44,17 +44,14 @@ async def judge_entailment(
     supporting_text: str,
     page_text: str,
 ) -> EntailmentJudgment:
-    """Ask the judge whether `supporting_text`, in the context of its full page, substantiates `claim`.
-
-    This is a calibration-only judge design: it is never called from
-    `investigation_agent.py`'s live citation-validation path. See
-    `judge_calibration.py` and README.md's "Calibrating an LLM judge"
-    section for why - this is the same entailment-checking idea the
-    project previously built, measured as unreliable on real runs, and
-    reverted, being re-tested here only to produce an honest, deterministic
-    agreement measurement against human labels before any decision is made
-    about whether it belongs in the live pipeline at all.
-    """
+    """Ask the judge whether `supporting_text`, in the context of its full page, substantiates `claim`."""
+    # Calibration-only: never called from investigation_agent.py's live
+    # citation-validation path. The same entailment-checking idea this
+    # project previously built, measured unreliable on real runs, and
+    # reverted - re-tested here only to produce an honest, deterministic
+    # agreement measurement against human labels before any decision is
+    # made about whether it belongs in the live pipeline. See
+    # judge_calibration.py and build-log.md, "Calibrating an LLM judge".
     user_message = (
         f"Claim: {claim}\n\n"
         f"Cited excerpt (supporting_text): {supporting_text}\n\n"

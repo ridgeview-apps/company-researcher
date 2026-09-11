@@ -16,18 +16,15 @@ class HumanReviewError(Exception):
 
 
 def needs_human_review(*, claim_type: str, evidence_sufficient: bool) -> bool:
-    """Decide whether a finding must pause for human review before being treated as final.
-
-    Deliberately narrow, per `docs/project-brief.md`'s fact/interpretation/
-    significance framing: an interpretation (a judgement beyond what the
-    evidence directly states, e.g. "this indicates governance instability")
-    or an insufficiently evidenced claim both require review; a directly
-    evidenced fact with sufficient evidence does not. No separate
-    self-reported confidence score is used - this project has already found
-    LLM self-assessment on a comparably subtle axis unreliable (see
-    README.md's "A reverted attempt at citation entailment checking"), so
-    the trigger is kept to two already-trusted, already-produced signals.
-    """
+    """Decide whether a finding must pause for human review before being treated as final."""
+    # Deliberately narrow, per docs/project-brief.md's fact/interpretation/
+    # significance framing: an interpretation (a judgement beyond what the
+    # evidence directly states) or an insufficiently evidenced claim both
+    # require review; a sufficiently evidenced fact does not. No separate
+    # self-reported confidence score is used - this project already found
+    # LLM self-assessment on a comparably subtle axis unreliable (see
+    # build-log.md, "A reverted attempt at citation entailment checking"),
+    # so the trigger stays to two already-trusted, already-produced signals.
     return claim_type == "interpretation" or not evidence_sufficient
 
 

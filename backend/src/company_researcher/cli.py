@@ -1004,29 +1004,23 @@ def run_injection_test(dataset_path: str) -> str:
 
 
 def _configure_langsmith_tracing(settings: Settings) -> None:
-    """Bridge `Settings`' LangSmith fields into the environment variables its SDK reads.
-
-    Nothing in this codebase calls `load_dotenv()` - `.env` is only ever read
-    through `Settings` (pydantic-settings), so a value set there is invisible
-    to `langsmith`/`langgraph`, which read `LANGSMITH_TRACING`/
-    `LANGSMITH_API_KEY`/`LANGSMITH_PROJECT`/`LANGSMITH_ENDPOINT` directly from
-    `os.environ`. This keeps `.env` the single place tracing is configured,
-    matching every other setting in this project, while still using
-    LangSmith's own env-driven activation underneath. `langsmith_endpoint`
-    defaults to LangSmith's US API and must be overridden to
-    `https://eu.api.smith.langchain.com` for an account on LangSmith's EU
-    region - verified against a real EU-region account and key, which
-    otherwise gets a bare `403 Forbidden` with no other detail from the
-    default US endpoint. A no-op, and thus safe to call unconditionally,
-    unless both tracing is explicitly enabled and a key is present - tracing
-    stays off by default, the same as every other real-LLM-dependent,
-    opt-in behaviour in this project.
-    """
+    """Bridge `Settings`' LangSmith fields into the environment variables its SDK reads."""
+    # Nothing here calls load_dotenv() - .env is only ever read through
+    # Settings (pydantic-settings), invisible to langsmith/langgraph, which
+    # read LANGSMITH_TRACING/LANGSMITH_API_KEY/LANGSMITH_PROJECT/
+    # LANGSMITH_ENDPOINT directly from os.environ. This keeps .env the one
+    # place tracing is configured while still using LangSmith's own
+    # env-driven activation underneath. A no-op, safe to call
+    # unconditionally, unless tracing is explicitly enabled and a key is
+    # present - off by default, like every other real-LLM opt-in here.
     if not settings.langsmith_tracing_enabled or settings.langsmith_api_key is None:
         return
     os.environ["LANGSMITH_TRACING"] = "true"
     os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key.get_secret_value()
     os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
+    # Defaults to LangSmith's US API; an EU-region account needs this
+    # overridden to https://eu.api.smith.langchain.com or it gets a bare
+    # 403 Forbidden with no other detail (verified against a real account).
     os.environ["LANGSMITH_ENDPOINT"] = str(settings.langsmith_endpoint)
 
 

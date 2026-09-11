@@ -29,19 +29,14 @@ class BaselineAnswer:
 async def answer_without_retrieval(
     chat_client: UsageAwareChatProvider, question: str, company_name: str
 ) -> BaselineAnswer:
-    """Answer one question using only the LLM's own knowledge - no retrieval, no tools.
-
-    This is the project brief's "General LLM" baseline (the first of three
-    suggested baselines) for measuring whether this project's evidence-
-    driven agent actually produces more complete, grounded, and auditable
-    answers than simply asking a frontier LLM. It deliberately reuses
-    `Finding`, the same structured output `investigation_agent.py`
-    produces, so the two paths are directly comparable in shape - a
-    citation this path attempts can then be checked against real,
-    persisted `DocumentPage` rows the same way any other citation would be
-    (see `baseline_comparison.py`), rather than assuming this path simply
-    has none.
-    """
+    """Answer one question using only the LLM's own knowledge - no retrieval, no tools."""
+    # The project brief's "General LLM" baseline, measuring whether this
+    # project's evidence-driven agent actually produces more complete,
+    # grounded, auditable answers than simply asking a frontier LLM.
+    # Deliberately reuses Finding, investigation_agent.py's own structured
+    # output, so a citation this path attempts can be checked against real
+    # DocumentPage rows the same way any other citation would be (see
+    # baseline_comparison.py), rather than assuming this path has none.
     user_message = f"Company: {company_name}\n\nQuestion: {question}"
     finding, usage = await chat_client.complete_structured_with_usage(
         [

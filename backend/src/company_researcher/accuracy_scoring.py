@@ -18,14 +18,7 @@ class AccuracyScoringError(Exception):
 
 @dataclass(frozen=True)
 class CitationRef:
-    """A claim's citation, kept so a human reviewer can look up the real page text.
-
-    Without this, a review template would leave a reader no way to trace a
-    claim back to source - exactly the gap that motivated adding this
-    field: the first version of this schema only kept claim text, and a
-    reviewer trying to verify a claim against the real corpus had nothing
-    to query by.
-    """
+    """A claim's citation, kept so a human reviewer can look up the real page text."""
 
     document_extraction_id: int
     page_number: int
@@ -42,30 +35,18 @@ def _citation_ref(citation: Citation) -> CitationRef:
 
 @dataclass(frozen=True)
 class QuestionAccuracyReview:
-    """One question's ground truth and both baselines' real claims, for human review.
+    """One question's ground truth and both baselines' real claims, for human review."""
 
-    The no-retrieval baseline always produces a `claim` (its structured
-    output always includes one, even when it self-reports
-    `evidence_sufficient=False` - see README's "Compare the specialized
-    agent against a general-LLM baseline" section), so `baseline_verdict`
-    is always the 3-way correctness scale. The specialized agent sometimes
-    produces no claim at all, raising `InvestigationAgentError` and
-    refusing rather than guess - refusing is not itself a wrong answer, so
-    it is judged on a separate axis (`specialized_refusal_verdict`: was
-    refusing the right call given the evidence actually available) rather
-    than forced into the same correctness scale, which would conflate
-    "answered incorrectly" with "declined to answer." Exactly one of
-    `specialized_verdict`/`specialized_refusal_verdict` applies to a given
-    question, matching whether `specialized_claim` is present or `None`.
-
-    Verdict fields are `None` when generated from a real comparison run -
-    a human must fill them in by comparing each claim against
-    `ground_truth_note` (and, via each claim's citations, the real
-    persisted page text) before this can be scored; see
-    `score_accuracy_review`, which fails closed on any question still
-    unreviewed rather than silently excluding it.
-    """
-
+    # The no-retrieval baseline always produces a claim (even self-reporting
+    # evidence_sufficient=False), so baseline_verdict is always the 3-way
+    # correctness scale. The specialized agent sometimes refuses instead of
+    # guessing, so refusing is judged on a separate axis
+    # (specialized_refusal_verdict) rather than forced onto the same scale,
+    # which would conflate "wrong" with "declined to answer" - exactly one
+    # of specialized_verdict/specialized_refusal_verdict applies, matching
+    # whether specialized_claim is present. Verdict fields are None until a
+    # human fills them in against ground_truth_note; score_accuracy_review
+    # fails closed on any question left unreviewed.
     question_id: str
     question_text: str
     ground_truth_note: str

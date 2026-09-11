@@ -26,18 +26,14 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ChatMessage:
-    """One message in a chat completion request.
+    """One message in a chat completion request."""
 
-    `tool_calls` and `tool_call_id` are only ever set for the two message
-    shapes a tool-calling round trip needs beyond a plain
-    system/user/assistant turn: an assistant message that requested one or
-    more tool calls (`tool_calls` set, `content` often empty), and a `tool`
-    role message reporting one call's result back (`tool_call_id` set,
-    matching the `ToolCall.id` it answers). Every other message leaves both
-    `None`, so existing callers that only ever pass `role`/`content` are
-    unaffected.
-    """
-
+    # tool_calls/tool_call_id are only set for the two shapes a
+    # tool-calling round trip needs beyond a plain system/user/assistant
+    # turn: an assistant message requesting tool calls (tool_calls set,
+    # content often empty), and a "tool" role message reporting one call's
+    # result back (tool_call_id matching the ToolCall.id it answers). Every
+    # other message leaves both None.
     role: ChatRole
     content: str
     tool_calls: tuple[ToolCall, ...] | None = None
@@ -92,20 +88,14 @@ class ChatProvider(Protocol):
 
 
 class UsageAwareChatProvider(Protocol):
-    """Boundary for chat completion that also reports token usage.
+    """Boundary for chat completion that also reports token usage."""
 
-    A separate protocol from `ChatProvider` rather than an addition to it,
-    so callers that only need `complete`/`complete_structured` (and their
-    test fakes, in particular `investigation_agent.py`'s original
-    single-question path before usage tracking existed) are unaffected by
-    this capability. Bundles both methods the same way `ChatProvider`
-    itself does, even though a given call site may only ever use one of
-    them - `investigation_agent.py` needs both (query generation calls
-    `complete_with_usage`, synthesis calls `complete_structured_with_usage`),
-    and `baseline_agent.py` only needs the structured one, but a single
-    shared protocol is simpler than two near-duplicates.
-    """
-
+    # A separate protocol from ChatProvider rather than an addition to it,
+    # so callers that only need complete/complete_structured (and their
+    # test fakes) are unaffected by this capability. Bundles both methods
+    # even though a given call site may only use one - investigation_agent.py
+    # needs both, baseline_agent.py only the structured one - but one shared
+    # protocol is simpler than two near-duplicates.
     async def complete_with_usage(
         self, messages: Sequence[ChatMessage]
     ) -> tuple[str, ChatUsage | None]:

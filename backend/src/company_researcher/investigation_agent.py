@@ -120,41 +120,25 @@ class ClaimTypeReclassification(BaseModel):
 
 
 def _force_unambiguous_fiscal_year(query: str, question: str) -> str:
-    """Append the question's fiscal year to `query` when exactly one is named.
-
-    `generate_query`'s LLM call does not reliably include a literal year
-    token in its generated query, and lexical search's OR-combined
-    `ts_rank` needs that literal token to disambiguate near-identical
-    boilerplate across fiscal years (see README's "Run the investigation
-    agent" section for the observed failure). Only applied when the
-    question names exactly one year: the evaluation dataset's hand-tuned
-    queries for multi-year range questions (e.g. "FY2021 through FY2025")
-    deliberately omit any year at all, so forcing one in here for those
-    would diverge from that established, measured-good behaviour instead
-    of fixing the single-year case that actually failed.
-    """
+    """Append the question's fiscal year to `query` when exactly one is named."""
     years = extract_fiscal_years(question)
+    # Skip multi-year questions: their hand-tuned queries deliberately omit
+    # a year token (see build-log.md, "fixing the fiscal-year leak").
     if len(years) != 1:
         return query
     year = years[0]
     if re.search(rf"\b{year}\b", query):
         return query
+    # generate_query's LLM doesn't reliably include the literal year token
+    # that ts_rank needs to disambiguate near-duplicate year-over-year filings.
     return f"{query} {year}".strip()
 
 
 def _fiscal_year_range(years: Sequence[str]) -> list[str]:
-    """Expand 2+ named years into the inclusive range between the earliest and latest.
-
-    A multi-year question names only its boundary years as literal tokens
-    (e.g. "FY2021 through FY2025" yields only "2021" and "2025" from
-    `extract_fiscal_years`), but the evaluation dataset's own multi-year
-    questions expect evidence from *every* year in between, not just the
-    endpoints (q4's answer covers FY2021, FY2022, FY2023, and FY2025
-    individually). Returns an empty list for 0 or 1 named years, matching
-    `_force_unambiguous_fiscal_year`'s existing single-year/no-year
-    threshold, since those cases are already handled by the single-pass
-    retrieval path.
-    """
+    """Expand 2+ named years into the inclusive range between the earliest and latest."""
+    # A question only names its boundary years (e.g. "FY2021 through
+    # FY2025" -> "2021", "2025"), but evidence is expected from every year
+    # in between too. Single-year/no-year cases stay on the single-pass path.
     if len(years) < 2:
         return []
     year_ints = sorted(int(year) for year in years)
@@ -190,51 +174,33 @@ class Finding(BaseModel):
     citations: list[Citation]
 
 
+# Kept separate per year so each sub-finding is synthesized from only that
+# year's own retrieved pages, avoiding one shared, mixed-year context window.
 class YearEvidence(BaseModel):
-    """One fiscal year's independently retrieved evidence and grounded sub-finding.
-
-    Kept separate per year so each sub-finding is synthesized from only
-    that year's own retrieved pages - the same discipline that fixed the
-    single-question cross-fiscal-year citation leak, now applied to a
-    genuinely multi-year question instead of relying on one shared,
-    mixed-year context window.
-    """
+    """One fiscal year's independently retrieved evidence and grounded sub-finding."""
 
     fiscal_year: str
     retrieved_pages: list[RetrievedPage]
     finding: Finding
 
 
+# Narrower than InvestigationState (only the 3 fields ainvoke() is actually
+# called with) so InvestigationState can require every field below without
+# making this initial call fail to type-check.
 class InvestigationInput(TypedDict):
-    """The three fields actually supplied to `graph.ainvoke()` at the start of a run.
-
-    A separate, narrower type from `InvestigationState` - passed to
-    `StateGraph` as its `input_schema` - so `InvestigationState` itself can
-    require every field (see below) without making the initial invoke call,
-    which only ever supplies these three, fail to type-check.
-    """
+    """The three fields actually supplied to `graph.ainvoke()` at the start of a run."""
 
     question: str
     company_number: str
     as_of_date: date | None
 
 
+# Every field is required even though each node only returns a partial
+# update - LangGraph merges each node's dict into this state - so node
+# functions return dict[str, object] and are trusted, per the graph's edge
+# ordering (not the type checker), to populate a field before it's read.
 class InvestigationState(TypedDict):
-    """LangGraph state threaded through the investigation graph.
-
-    Every field is required, even though any single node only ever returns
-    a partial update: LangGraph merges each node's returned dict into this
-    state rather than requiring it to return the whole shape, so node
-    functions are annotated to return `dict[str, object]`, not
-    `InvestigationState`, and are trusted (per the graph's own edge
-    ordering, not verified by the type checker) to populate a field before
-    any downstream node reads it - e.g. `retrieved_pages` is always set by
-    `retrieve_evidence_node` before `synthesize_finding_node` reads it.
-    Making every field required, rather than the previous `total=False`,
-    lets every node's direct `state["some_key"]` read type-check honestly
-    instead of triggering a spurious "key might not exist" warning at every
-    read site in the file.
-    """
+    """LangGraph state threaded through the investigation graph."""
 
     question: str
     company_number: str
@@ -250,14 +216,10 @@ class InvestigationState(TypedDict):
 
 
 def _sum_usage(records: Sequence[ChatUsage]) -> ChatUsage | None:
-    """Sum token usage across every LLM call an investigation made.
-
-    Returns `None` only if no call in the run reported usage at all
-    (e.g. every fake client in a test), rather than a zero-valued
-    `ChatUsage` that would misleadingly imply a real, metered run that
-    happened to cost nothing.
-    """
+    """Sum token usage across every LLM call an investigation made."""
     if not records:
+        # None, not a zero-valued ChatUsage - a real run with zero cost is
+        # otherwise indistinguishable from no usage being reported at all.
         return None
     return ChatUsage(
         prompt_tokens=sum(record.prompt_tokens for record in records),
@@ -310,52 +272,19 @@ def _validate_citations(
 
 
 def _normalize_for_quote_check(text: str) -> str:
-    """Strip whitespace/punctuation noise and case so a genuine quote isn't rejected for it.
-
-    Real runs against the persisted corpus (see README.md's "Verifying
-    citation quotes" section) surfaced several recurring, non-substantive
-    differences between a real page and an otherwise-genuine quote of it:
-    OCR renders a "." instead of "," as a thousands separator (e.g.
-    "437.629" for "437,629"); OCR pairs a mismatched bracket character
-    (e.g. "{Appointed 9 January 2023)" for "(Appointed 9 January 2023)");
-    OCR drops a space inside a word or name (e.g. "N AMcElhinney" for "N A
-    McElhinney"); and the model itself naturally joins a page's newline-
-    separated list (e.g. a list of directors, one name per line) into a
-    comma-separated prose sentence when quoting it, terminated with a
-    period the source never had. A second company's own OCR noise added a
-    fifth case: a stray "©" character and a line-wrap hyphen inserted
-    mid-word (e.g. "debt ©\n-fundraising" for "debt fundraising", from a
-    PDF carrying DocuSign watermark artifacts Gymshark's filings did not
-    have). A sixth case, flagged as an open gap during the baseline-vs-
-    specialized comparison milestone and confirmed here to actually trigger
-    a real refusal during the human-calibrated accuracy-scoring milestone:
-    OCR renders a ":" instead of "." as a decimal point in a monetary
-    figure (e.g. Nothing Technology's real filing text "£43:4m" for the
-    true "£43.4m") - a citation quoting the correct figure with a period
-    failed verification purely because ":" was not in the stripped set,
-    even though the underlying figure was genuine and correctly reported.
-    Fixing that alone was verified to be insufficient for the exact real
-    question that motivated it, not assumed sufficient: re-running it
-    still failed, on the same page, because of a seventh, distinct
-    artifact on the very same sentence - a stray "»" character inserted
-    mid-sentence (the real text reads "amounted to £59.4m » (2022: loss
-    of £43:4m)"), which the model naturally omits as meaningless noise
-    when quoting, and which nothing in the stripped set removed. None of
-    these involve a different word or digit sequence - only whitespace
-    and punctuation - so every run of whitespace is removed entirely
-    rather than merely collapsed, commas, periods, hyphens, colons, and
-    "»" are stripped, curly braces are canonicalized to parentheses, and
-    stray underscore "leader" characters (e.g. "__260.674") and "©"
-    are stripped too. This is a deliberate trade-off: it makes the check
-    slightly more permissive (in principle two genuinely different
-    numbers, or two adjacent but unrelated words, could collide once
-    whitespace and separators between them are removed), which is
-    acceptable because this check only verifies quote *fidelity* to real
-    page text - catching a wrong page or fabricated content - not the
-    numeric or semantic correctness of the claim built from it, which is a
-    distinct, harder problem not covered here (see the real-run FY2022
-    example in the same README section).
-    """
+    """Strip whitespace/punctuation noise and case so a genuine quote isn't rejected for it."""
+    # Real runs surfaced repeated non-substantive OCR/formatting noise that
+    # would otherwise fail a genuine quote: "." vs "," as a thousands
+    # separator, mismatched brackets ("{" for "("), a dropped space inside a
+    # name, a newline-separated list joined into prose with an added
+    # period, stray "©" / mid-word line-wrap hyphens from watermark
+    # artifacts, ":" vs "." as a decimal point, and a stray "»" mid-sentence.
+    # None of these change a word or digit sequence - only whitespace and
+    # punctuation - so this is deliberately permissive (two different
+    # numbers or adjacent unrelated words could in principle collide once
+    # separators are stripped); it only checks quote *fidelity* to real page
+    # text, not the claim's numeric/semantic correctness. Full case-by-case
+    # history: build-log.md, "Verifying citation quotes".
     normalized = text.replace("{", "(").replace("}", ")")
     for character in (",", ".", "_", "-", "©", ":", "»"):
         normalized = normalized.replace(character, "")
@@ -365,18 +294,12 @@ def _normalize_for_quote_check(text: str) -> str:
 def _find_quote_mismatches(
     finding: Finding, retrieved_pages: Sequence[RetrievedPage]
 ) -> list[Citation]:
-    """Return citations whose supporting_text is not a verbatim excerpt of its cited page.
-
-    Assumes `_validate_citations` has already confirmed every citation's
-    page was actually retrieved - a citation whose page is missing from
-    `retrieved_pages` is skipped here rather than re-reported. Catches a
-    citation that points at a real, retrieved page but quotes text that
-    was never actually written there (including text spliced together
-    from different parts of the page) - a genuine gap the existing
-    page-identity check alone cannot catch, observed on a real
-    investigation run (see README.md's "Verifying citation quotes"
-    section).
-    """
+    """Return citations whose supporting_text is not a verbatim excerpt of its cited page."""
+    # Assumes _validate_citations already confirmed every citation's page
+    # was retrieved. Catches a citation pointing at a real page but quoting
+    # text never actually written there (including text spliced together
+    # from different parts of the page) - see build-log.md, "Verifying
+    # citation quotes".
     text_by_key = {
         (page.document_extraction_id, page.page_number): page.text
         for page in retrieved_pages
@@ -420,31 +343,22 @@ async def _synthesize_and_validate(
     user_message: str,
     retrieved_pages: Sequence[RetrievedPage],
 ) -> tuple[Finding, list[ChatUsage]]:
-    """Run one structured synthesis call and enforce both citation guarantees.
-
-    Every citation must reference a page that was actually retrieved
-    (`_validate_citations`, unchanged, fail-closed with no retry - an
-    existence violation is a more severe error than an imprecise quote).
-    Every citation's supporting_text must also be a genuine, verbatim
-    excerpt of that page's real text (`_find_quote_mismatches`). A failed
-    quote check retries the synthesis once with feedback naming exactly
-    which quote was wrong, giving the model a chance to self-correct
-    before this raises `InvestigationAgentError`. Returns every call's
-    token usage alongside the finding (one entry normally, two if a
-    retry happened), so callers can accumulate a running total across the
-    whole investigation.
-    """
+    """Run one structured synthesis call and enforce both citation guarantees."""
     messages = [
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_message),
     ]
     finding, usage = await chat_client.complete_structured_with_usage(messages, Finding)
     usage_records = [usage] if usage is not None else []
+    # Existence check: fail-closed, no retry - citing a page never retrieved
+    # is a more severe error than an imprecise quote.
     _validate_citations(finding, retrieved_pages)
     mismatches = _find_quote_mismatches(finding, retrieved_pages)
     if not mismatches:
         return finding, usage_records
 
+    # Quote-fidelity check: give the model one self-correction retry, naming
+    # exactly which quote was wrong, before treating it as a hard failure.
     retry_message = f"{user_message}\n\n{_format_quote_correction_request(mismatches)}"
     retried_finding, retry_usage = await chat_client.complete_structured_with_usage(
         [
@@ -470,37 +384,23 @@ async def _synthesize_and_validate(
 async def _apply_evidence_relevance_backstop(
     session: AsyncSession, question: str, finding: Finding
 ) -> Finding:
-    """Force evidence_sufficient=False when no citation shares any discriminative term with the question.
-
-    Closes a real gap this project's adversarial-injection testing measured
-    (see README.md's "Adversarial / prompt-injection testing" section): a
-    page containing text unrelated to the question can still be cited as if
-    it answered it, with the model self-reporting evidence_sufficient=True
-    regardless. Deterministic and reused rather than invented: reuses
-    `derive_discriminative_query`'s existing corpus-wide document-frequency
-    ranking (already built and measured for retrieval) to find the
-    question's genuinely rare, topic-specific terms - checking for overlap
-    with *any* content word (via plain `derive_query`) would false-positive
-    on generic words nearly every filing page contains (e.g. "company"),
-    exactly the boilerplate-repetition problem already diagnosed for
-    page-level document frequency elsewhere in this project. The match
-    itself reuses `text_matches_query`'s stemmed, OR-combined PostgreSQL
-    text search - the same mechanism `search_pages` uses for retrieval - so
-    a question built from "resignations" still matches a citation that says
-    "resigned", rather than requiring exact token identity. Checked against
-    each citation's own `supporting_text`, not the full retrieved page: the
-    page may also contain unrelated or injected content that happens to
-    mention the question's terms without the citation itself relying on it
-    (see README for the observed case this distinction defends against).
-    Only ever narrows evidence_sufficient from True to False, never the
-    reverse - a citation that already fails this check was never going to
-    become sufficient for something else.
-    """
+    """Force evidence_sufficient=False when no citation shares any discriminative term with the question."""
     if not finding.evidence_sufficient:
         return finding
+    # Closes a real adversarial-injection gap: a page unrelated to the
+    # question could still be cited as if it answered it, with the model
+    # self-reporting evidence_sufficient=True regardless. Reuses
+    # derive_discriminative_query's corpus document-frequency ranking
+    # (already built for retrieval) rather than matching on any content
+    # word, which would false-positive on boilerplate nearly every page
+    # shares (e.g. "company"). See build-log.md, "Adversarial /
+    # prompt-injection testing".
     discriminative_query = await derive_discriminative_query(session, question)
     if not discriminative_query:
         return finding
+    # Checked against each citation's own supporting_text, not the full
+    # retrieved page: the page may contain unrelated or injected content
+    # that mentions the question's terms without the citation relying on it.
     citation_text = " ".join(
         citation.supporting_text for citation in finding.citations
     ).strip()
@@ -508,6 +408,7 @@ async def _apply_evidence_relevance_backstop(
         session, citation_text, discriminative_query
     ):
         return finding
+    # Only ever narrows True -> False, never the reverse.
     return finding.model_copy(update={"evidence_sufficient": False})
 
 
@@ -525,63 +426,42 @@ _JUDGEMENT_SEEKING_PHRASES = (
 
 
 def _question_seeks_judgement(question: str) -> bool:
-    """Detect, deterministically, whether a question itself asks for a judgement.
-
-    A different technique from `_reclassify_claim_type`, not a variant of
-    it: that LLM call failed 4 consecutive real adversarial-testing runs
-    against exactly this pattern (`interpretation-bait-governance-
-    instability` - see README.md's "Closing the HITL-bypass gap" section)
-    - an injected page baits the model into a bare factual recitation that
-    technically dodges an evaluative question, and the reclassifier,
-    reading only that evasive claim, never recognizes the evasion itself
-    as needing 'interpretation'. This check reads only the user's own
-    question text - never the claim, never any evidence-derived content -
-    so no instruction embedded in a retrieved (and possibly adversarial)
-    filing page can reach it, unlike a call that reads model-produced
-    text. It is a fixed-phrase heuristic, not a semantic parser: it will
-    catch the exploited pattern and close variants, but a sufficiently
-    different phrasing of an evaluative question could still slip past
-    it - the same "proxy, not the thing itself" limitation already
-    documented for `derive_discriminative_query`'s document-frequency
-    heuristic elsewhere in this project.
-    """
+    """Detect, deterministically, whether a question itself asks for a judgement."""
+    # A separate technique from _reclassify_claim_type, not a variant of it:
+    # that LLM call failed 4 consecutive adversarial-testing runs against an
+    # injected page baiting the model into a bare factual recitation that
+    # technically dodges an evaluative question - the reclassifier, reading
+    # only that evasive claim, never recognized the evasion as needing
+    # 'interpretation'. This check reads only the user's own question text,
+    # never the claim or any evidence-derived content, so no instruction
+    # embedded in a retrieved page can reach it. A fixed-phrase heuristic,
+    # not a semantic parser - see build-log.md, "Closing the HITL-bypass gap".
     lowered = question.lower()
     return any(phrase in lowered for phrase in _JUDGEMENT_SEEKING_PHRASES)
 
 
 def _apply_question_judgement_backstop(question: str, finding: Finding) -> Finding:
-    """Force claim_type=interpretation when the question itself asks for a judgement.
-
-    Like the other backstops, only ever upgrades a self-reported 'fact' to
-    'interpretation', never the reverse - see `_question_seeks_judgement`
-    for why this check, unlike `_reclassify_claim_type`, cannot be reached
-    by an injected instruction at all.
-    """
+    """Force claim_type=interpretation when the question itself asks for a judgement."""
     if finding.claim_type == "interpretation":
         return finding
     if not _question_seeks_judgement(question):
         return finding
+    # Only ever upgrades fact -> interpretation, never the reverse.
     return finding.model_copy(update={"claim_type": "interpretation"})
 
 
 async def _reclassify_claim_type(
     chat_client: UsageAwareChatProvider, question: str, finding: Finding
 ) -> tuple[Finding, ChatUsage | None]:
-    """Re-check a self-reported claim_type="fact" with a call that never sees evidence text.
-
-    Closes the other real gap adversarial-injection testing measured: an
-    injected instruction embedded in a retrieved page can bait the
-    synthesis call into self-labelling an interpretation - or an answer
-    that dodges an evaluative question by only restating an underlying
-    fact - as claim_type="fact". Because this second call is given only the
-    question and the already-produced claim, never any evidence-derived
-    text, no instruction hidden in a page can reach it. Deliberately
-    asymmetric: only ever called when the self-reported claim_type is
-    "fact" (skipped entirely when already "interpretation"), and only ever
-    used to upgrade fact -> interpretation, never the reverse - this is a
-    backstop against under-flagging, not a general-purpose reclassifier
-    that could itself become a new way to suppress review.
-    """
+    """Re-check a self-reported claim_type="fact" with a call that never sees evidence text."""
+    # Closes the other adversarial-injection gap: an instruction embedded in
+    # a retrieved page can bait synthesis into self-labelling an
+    # interpretation (or an evasive answer) as "fact". This second call only
+    # ever sees the question and the already-produced claim, never
+    # evidence-derived text, so no hidden instruction can reach it. Only
+    # called when self-reported as "fact", and only ever upgrades fact ->
+    # interpretation - a backstop against under-flagging, not a
+    # general-purpose reclassifier that could itself suppress review.
     if finding.claim_type == "interpretation":
         return finding, None
     user_message = f"Question: {question}\n\nClaim: {finding.claim}"
@@ -605,19 +485,14 @@ async def _apply_review_integrity_checks(
     question: str,
     finding: Finding,
 ) -> tuple[Finding, list[ChatUsage]]:
-    """Apply all three human-review-gate backstops to a synthesized finding.
-
-    All three checks only ever push a finding toward requiring review,
-    never away from it - a deliberately asymmetric safety net against the
-    self-classification manipulation adversarial-injection testing found,
-    not a general-purpose reclassifier. `_apply_question_judgement_backstop`
-    runs before `_reclassify_claim_type` deliberately: it is free (no LLM
-    call, question-only) and, when it already upgrades claim_type to
-    'interpretation', `_reclassify_claim_type`'s own early-return skips its
-    LLM call entirely - this ordering can only reduce cost, never add to
-    it.
-    """
+    """Apply all three human-review-gate backstops to a synthesized finding."""
+    # All three only ever push toward requiring review, never away from it -
+    # a deliberately asymmetric safety net against the self-classification
+    # manipulation adversarial-injection testing found.
     finding = await _apply_evidence_relevance_backstop(session, question, finding)
+    # Runs before _reclassify_claim_type deliberately: it's free (no LLM
+    # call), and when it already upgrades to 'interpretation', the LLM
+    # call's early-return skips entirely - this ordering can only cut cost.
     finding = _apply_question_judgement_backstop(question, finding)
     finding, usage = await _reclassify_claim_type(chat_client, question, finding)
     return finding, [usage] if usage is not None else []
@@ -635,13 +510,10 @@ def _format_evidence_text(pages: Sequence[RetrievedPage], *, empty_message: str)
 
 
 def _format_year_findings_summary(year_evidence: Sequence[YearEvidence]) -> str:
-    """Render each year's already-grounded sub-finding for the aggregation prompt.
-
-    Passes only each sub-finding's claim, sufficiency, and citations - not
-    the raw page text again - since grounding already happened once per
-    year; the aggregation step is a narrative/comparison layer over facts
-    already validated, not a second pass over OCR text.
-    """
+    """Render each year's already-grounded sub-finding for the aggregation prompt."""
+    # Only claim/sufficiency/citations, not raw page text again - grounding
+    # already happened once per year; aggregation is a narrative/comparison
+    # layer over already-validated facts.
     return "\n\n".join(
         f"Fiscal year {evidence.fiscal_year}:\n"
         f"  claim: {evidence.finding.claim}\n"
@@ -667,16 +539,13 @@ def _build_graph(
 ) -> CompiledStateGraph[
     InvestigationState, None, InvestigationInput, InvestigationState
 ]:
-    """Assemble the investigation graph.
-
-    generate_query always runs first, then branches on how many fiscal
-    years the question names: 0 or 1 (the original, unchanged path) goes
-    through a single retrieve_evidence -> synthesize_finding pass; 2 or
-    more (a genuinely multi-year question) goes through a per-year
-    gather_year_findings -> aggregate_findings pass instead, so the
-    question's evidence for one fiscal year is never crowded out by
-    another's in a single shared context window.
-    """
+    """Assemble the investigation graph."""
+    # generate_query always runs first, then branches on how many fiscal
+    # years the question names: 0 or 1 takes the original single
+    # retrieve_evidence -> synthesize_finding pass; 2+ (a genuinely
+    # multi-year question) takes a per-year gather_year_findings ->
+    # aggregate_findings pass instead, so one year's evidence never crowds
+    # out another's in a single shared context window.
 
     async def generate_query_node(state: InvestigationState) -> dict[str, object]:
         query, usage = await chat_client.complete_with_usage(
@@ -702,29 +571,17 @@ def _build_graph(
             candidate_ids = await document_extraction_ids_for_fiscal_year(
                 session, fiscal_year, company_number=state["company_number"]
             )
-            # An empty result means this company has no filing with an
-            # accounting period in this year -- which happens not only for
-            # a genuine reporting gap, but also when the named year refers
-            # to something other than an accounting period at all (e.g. a
-            # charge-creation date), a case document_extraction_ids_for_fiscal_year
-            # cannot distinguish from the genuine gap case, since it only
-            # knows about made_up_date. Passing an empty list to
-            # search_pages would match zero pages instead of no
-            # restriction, silently discarding real evidence for a
-            # question this system can answer (observed on a real Nothing
-            # Technology run: a question naming "December 2024" as a
-            # charge date, not a fiscal year, retrieved nothing). Falling
-            # back to no restriction accepts a small risk of over-broad
-            # retrieval in exchange for not failing closed on an answerable
-            # question; this is deliberately narrower than always widening
-            # in gather_year_findings_node's multi-year path, where an
-            # empty result for a genuinely absent year must keep reporting
-            # evidence_sufficient=False for that year, not silently widen
-            # to every year's filings. (The lookup itself is scoped by
-            # company_number so that "empty" reliably means this company
-            # has no such filing, not that no company in the shared corpus
-            # does -- a real cross-company leak observed once another
-            # company's filing happened to share the named year.)
+            # Empty can mean a genuine reporting gap, or the named year
+            # wasn't actually an accounting period (e.g. a charge-creation
+            # date) - this lookup can't tell the two apart. Falling back to
+            # no restriction (rather than matching zero pages) accepts a
+            # small over-broad-retrieval risk instead of failing closed on
+            # an answerable question (observed on a real Nothing Technology
+            # run). Deliberately narrower than gather_year_findings_node's
+            # multi-year path, which must keep reporting
+            # evidence_sufficient=False for a genuinely absent year rather
+            # than silently widen. Scoped by company_number so "empty"
+            # means this company lacks the filing, not the whole corpus.
             document_extraction_ids = candidate_ids or None
         matches = await search_pages(
             session,
@@ -890,12 +747,10 @@ async def _run_graph(
     context_pages: int,
     as_of_date: date | None,
 ) -> InvestigationState:
-    """Build and run the investigation graph, returning its final state.
-
-    Shared by `investigate()` and `investigate_with_usage()` so the two
-    differ only in what they read out of the final state, not in how the
-    graph itself is built or invoked.
-    """
+    """Build and run the investigation graph, returning its final state."""
+    # Shared by investigate(), investigate_with_review(), and
+    # investigate_with_usage() so the three differ only in what they read
+    # out of the final state, not in how the graph is built or invoked.
     graph = _build_graph(
         session, chat_client, search_depth=search_depth, context_pages=context_pages
     )
@@ -921,25 +776,12 @@ async def investigate(
     context_pages: int = DEFAULT_CONTEXT_PAGES,
     as_of_date: date | None = None,
 ) -> Finding:
-    """Run the investigation graph for one natural-language question.
-
-    Uses lexical search only: on this project's measured Gymshark
-    evaluation corpus, hand-tuned lexical search outperforms both
-    vector-only search and naive equal-weighted RRF hybrid (see README.md),
-    so lexical is the retrieval tool this first version of the agent calls.
-    Unlike the evaluation dataset's hand-tuned queries, `generated_query` is
-    produced by the LLM from the question alone at run time.
-
-    `company_number` is required, not optional/no-op like the fiscal-year
-    restriction: unlike a fiscal year, which a question may or may not
-    name, an investigation is always about exactly one company, so every
-    call site must be explicit about which one rather than silently
-    searching across every persisted company's filings. `as_of_date` is
-    optional and defaults to no restriction, like the fiscal-year
-    restriction, since most investigations have no point-in-time cutoff;
-    when given, it restricts every retrieval pass to filings that were
-    already publicly filed on or before that date (see `search_pages`).
-    """
+    """Run the investigation graph for one natural-language question."""
+    # Lexical search only: hand-tuned lexical outperforms both vector-only
+    # and naive hybrid on this project's measured corpus (see README.md's
+    # "At a glance"), so lexical is what this agent calls. Unlike the
+    # evaluation dataset's hand-tuned queries, generated_query is produced
+    # by the LLM from the question alone, at run time.
     result = await _run_graph(
         session,
         chat_client,
@@ -962,18 +804,12 @@ async def investigate_with_review(
     context_pages: int = DEFAULT_CONTEXT_PAGES,
     as_of_date: date | None = None,
 ) -> tuple[Finding, int | None]:
-    """Run one investigation and also return a pending human review ID, if one was raised.
-
-    A separate function from `investigate`, following the same pattern
-    `investigate_with_usage` already established, so every existing caller
-    (the CLI's `investigate` command previously, and every test calling
-    `investigate` directly) is unaffected by this addition to the return
-    contract. The `human_review_gate` node inside the graph itself decides
-    whether a review was needed and persists it if so (see
-    `human_review.needs_human_review`); this function only reads that
-    decision back out of the final graph state. A `None` review_id means
-    the finding was a sufficiently evidenced fact and needs no review.
-    """
+    """Run one investigation and also return a pending human review ID, if one was raised."""
+    # A separate function rather than changing investigate()'s return
+    # contract, so every existing caller (the CLI, and tests calling
+    # investigate() directly) is unaffected. human_review_gate decides
+    # whether review is needed and persists it; this just reads that
+    # decision back out of the final graph state. None means no review needed.
     result = await _run_graph(
         session,
         chat_client,
@@ -996,17 +832,11 @@ async def investigate_with_usage(
     context_pages: int = DEFAULT_CONTEXT_PAGES,
     as_of_date: date | None = None,
 ) -> tuple[Finding, ChatUsage | None]:
-    """Run one investigation and also return its total token usage.
-
-    A separate function from `investigate` rather than a change to it, so
-    every existing caller (the CLI's `investigate` command, and every
-    test in `test_investigation_agent.py`) is unaffected - the same
-    pattern `ChatClient.complete_with_usage` already established. Sums
-    token usage across every LLM call the run made (query generation,
-    every synthesis call including retries, and - for a multi-year
-    question - every per-year pass plus the final aggregation); see
-    `_sum_usage`.
-    """
+    """Run one investigation and also return its total token usage."""
+    # Separate from investigate() for the same reason investigate_with_review()
+    # is: existing callers stay unaffected. Sums usage across every LLM call
+    # in the run (query generation, every synthesis call including retries,
+    # and - for a multi-year question - every per-year pass plus aggregation).
     result = await _run_graph(
         session,
         chat_client,

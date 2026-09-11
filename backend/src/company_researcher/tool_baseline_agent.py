@@ -164,27 +164,19 @@ async def answer_with_tools(
     question: str,
     company_number: str,
 ) -> ToolBaselineAnswer:
-    """Answer one question using a bounded tool-calling loop over real Companies House data.
-
-    This is the project brief's "General LLM + web, instructed to use
-    Companies House" baseline, scoped to Companies House itself rather than
-    open web search (no new provider/secret, directly comparable
-    citations, reproducible). Unlike `answer_without_retrieval` (no tools
-    at all) or `investigate()` (engineered query generation and restricted
-    lexical retrieval over an already-OCR'd corpus), this baseline gives
-    the model real tools - the company's profile, its filing history, and
-    on-demand OCR of any filing document - and lets it decide for itself
-    what to fetch and read. That isolates whether this project's engineered
-    retrieval/verification machinery earns its keep against a general
-    tool-using agent working from the same underlying data, not different
-    data.
-
-    The tools reuse this project's existing ingestion/OCR pipeline
-    unchanged (`ingest_company`, `ingest_filing_document`,
-    `extract_filing_document`), matching the project's principle that the
-    domain-specific data layer stays separate from - and here, shared
-    with - the reusable AI architecture being compared.
-    """
+    """Answer one question using a bounded tool-calling loop over real Companies House data."""
+    # The project brief's "General LLM + web, instructed to use Companies
+    # House" baseline, scoped to Companies House itself rather than open web
+    # search (no new provider/secret, directly comparable citations,
+    # reproducible). Unlike answer_without_retrieval (no tools at all) or
+    # investigate() (engineered query generation + restricted lexical
+    # retrieval over an already-OCR'd corpus), this gives the model real
+    # tools - profile, filing history, on-demand OCR - and lets it decide
+    # what to fetch, isolating whether this project's engineered
+    # retrieval/verification earns its keep against a general tool-using
+    # agent working from the same underlying data. The tools reuse the
+    # existing ingestion/OCR pipeline unchanged, keeping the domain-specific
+    # data layer shared, not duplicated, across baselines.
     normalized_company_number = normalize_company_number(company_number)
     await ingest_company(session, companies_house_client, normalized_company_number)
 
@@ -422,18 +414,7 @@ async def _list_filing_document_pages(
 async def _get_filing_document_page_text(
     context: _ToolBaselineContext, document_extraction_id: int, page_number: int
 ) -> dict[str, object]:
-    """Return one page's OCR'd text, scoped to this run's own company.
-
-    document_extraction_id is a globally unique id shared across every
-    company's filings in the same table, and this argument is supplied
-    directly by the model rather than resolved from a prior scoped tool
-    call - it must be re-checked against context.company_number here,
-    the same discipline the other three tools already apply, or a
-    hallucinated/misremembered id belonging to a different company would
-    silently return that company's real page text, get added to
-    pages_read, and pass _validate_tool_citations as if it were genuine
-    evidence for the company under investigation.
-    """
+    """Return one page's OCR'd text, scoped to this run's own company."""
     page = await context.session.scalar(
         select(DocumentPage)
         .join(
@@ -447,6 +428,12 @@ async def _get_filing_document_page_text(
         .where(
             DocumentPage.document_extraction_id == document_extraction_id,
             DocumentPage.page_number == page_number,
+            # document_extraction_id is globally unique across every
+            # company's filings and is supplied directly by the model, not
+            # resolved from a prior scoped call - without this re-check, a
+            # hallucinated/misremembered id belonging to a different company
+            # would silently return that company's real text as if it were
+            # genuine evidence for the company under investigation.
             Filing.company_number == context.company_number,
         )
     )

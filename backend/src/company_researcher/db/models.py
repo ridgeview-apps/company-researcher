@@ -291,18 +291,15 @@ class DocumentEmbedding(Base):
 
 
 class HumanReview(Base):
-    """One human-in-the-loop review of an investigation finding.
+    """One human-in-the-loop review of an investigation finding."""
 
-    Created by `investigation_agent.py`'s `human_review_gate` node whenever
-    a finding is an interpretation (rather than a directly evidenced fact)
-    or reports insufficient evidence, so a human analyst can approve, edit,
-    reject, or request further research before the finding is treated as
-    final. `citations` mirrors `raw_profile`/`raw_filing`'s JSONB provenance
-    convention rather than a normalized table, since a citation here is
-    already a closed, immutable snapshot of what the model cited at
-    synthesis time - not something later queries need to join against.
-    """
-
+    # Created by investigation_agent.py's human_review_gate node whenever a
+    # finding is an interpretation (not a directly evidenced fact) or
+    # reports insufficient evidence, so an analyst can approve, edit,
+    # reject, or request further research before it's treated as final.
+    # citations mirrors raw_profile/raw_filing's JSONB provenance convention
+    # rather than a normalized table, since it's already a closed, immutable
+    # snapshot of what the model cited - not something later queries join against.
     __tablename__ = "human_reviews"
     __table_args__ = (
         CheckConstraint(
