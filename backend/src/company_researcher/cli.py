@@ -80,7 +80,7 @@ from company_researcher.retrieval_evaluation import (
     with_discriminative_queries,
 )
 
-DEFAULT_EVALUATION_DATASET = "evaluation/gymshark_retrieval_questions.json"
+DEFAULT_EVALUATION_DATASET = "evaluation/gymshark_retrieval_dataset.json"
 DEFAULT_ADVERSARIAL_DATASET = "evaluation/adversarial_injection_cases.json"
 DEFAULT_INVESTIGATION_QUESTION = (
     "What did the directors identify as Gymshark's going-concern position "

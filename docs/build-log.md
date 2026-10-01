@@ -294,7 +294,7 @@ uv run company-researcher evaluate-retrieval
 ```
 
 Without an argument, the command evaluates
-[`evaluation/gymshark_retrieval_questions.json`](../backend/evaluation/gymshark_retrieval_questions.json):
+[`evaluation/gymshark_retrieval_dataset.json`](../backend/evaluation/gymshark_retrieval_dataset.json):
 a small, manually labelled set of retrieval questions over Gymshark Ltd's
 persisted accounts filings, including an original/amended filing pair. Each
 question's text is matched against `document_pages` using a
@@ -643,7 +643,7 @@ created 18 December 2024 naming Banco Santander, S.A. as security agent,
 and three more created 1 July 2026 naming a different security agent,
 Ocean II PLO LLC.
 
-[`evaluation/nothing_technology_retrieval_questions.json`](../backend/evaluation/nothing_technology_retrieval_questions.json)
+[`evaluation/nothing_technology_retrieval_dataset.json`](../backend/evaluation/nothing_technology_retrieval_dataset.json)
 is a second hand-labelled evaluation dataset, built with the identical
 methodology as Gymshark's: relevant pages identified manually by reading
 the real, persisted OCR page text, hand-tuned queries chosen by measuring
@@ -659,7 +659,7 @@ plays in the Gymshark dataset. Score it the same way as the Gymshark
 dataset, by passing its path:
 
 ```bash
-uv run company-researcher evaluate-retrieval evaluation/nothing_technology_retrieval_questions.json
+uv run company-researcher evaluate-retrieval evaluation/nothing_technology_retrieval_dataset.json
 ```
 
 ### Measured result
@@ -692,8 +692,8 @@ The same two corpus-blind, deterministic query-construction strategies
 measured against Gymshark were also run against this dataset:
 
 ```bash
-uv run company-researcher evaluate-retrieval evaluation/nothing_technology_retrieval_questions.json --query-source derived
-uv run company-researcher evaluate-retrieval evaluation/nothing_technology_retrieval_questions.json --query-source derived-idf
+uv run company-researcher evaluate-retrieval evaluation/nothing_technology_retrieval_dataset.json --query-source derived
+uv run company-researcher evaluate-retrieval evaluation/nothing_technology_retrieval_dataset.json --query-source derived-idf
 ```
 
 | Strategy | Recall@5 | Recall@10 | MRR | (Gymshark's own result) |
@@ -1494,7 +1494,7 @@ visible on a successful run.
 
 ```bash
 uv run company-researcher compare-baseline
-uv run company-researcher compare-baseline evaluation/nothing_technology_retrieval_questions.json
+uv run company-researcher compare-baseline evaluation/nothing_technology_retrieval_dataset.json
 ```
 
 Deliberately out of scope for this slice, flagged rather than silently

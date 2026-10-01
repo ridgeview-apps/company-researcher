@@ -52,10 +52,10 @@ class FakeEmbeddingsProvider:
 
 TEST_COMPANY_NUMBER = "TE000007"
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GYMSHARK_DATASET_PATH = REPO_ROOT / "evaluation" / "gymshark_retrieval_questions.json"
+GYMSHARK_DATASET_PATH = REPO_ROOT / "evaluation" / "gymshark_retrieval_dataset.json"
 GYMSHARK_COMPANY_NUMBER = "08130873"
 NOTHING_TECHNOLOGY_DATASET_PATH = (
-    REPO_ROOT / "evaluation" / "nothing_technology_retrieval_questions.json"
+    REPO_ROOT / "evaluation" / "nothing_technology_retrieval_dataset.json"
 )
 NOTHING_TECHNOLOGY_COMPANY_NUMBER = "12984564"
 
