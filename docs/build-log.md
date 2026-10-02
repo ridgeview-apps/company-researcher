@@ -1503,7 +1503,7 @@ real tool/browsing integration - since built, see
 [A tool-using baseline: "General LLM + Companies House"](#a-tool-using-baseline-general-llm--companies-house)
 below); automated or LLM-judge factual-accuracy
 scoring (factual accuracy below was checked by direct comparison against
-each question's already-written, manually-verified `note` field);
+each question's already-written, manually-verified `ground_truth_answer` field);
 material-event recall and completeness scoring; temporal/future-leakage
 testing (no as-of retrieval capability exists yet to test it against);
 and cost on the specialized agent's failure path (see the limitation
@@ -1621,7 +1621,7 @@ leakage testing) remains open, deliberately unstarted work.
 
 The section above deliberately did not score factual accuracy
 automatically - a reader compared each printed claim against the
-dataset's hand-verified `note` by eye. This closes that gap for real,
+dataset's hand-verified `ground_truth_answer` by eye. This closes that gap for real,
 following this project's rule against inventing evaluation results: every
 verdict below was assigned by a human reading the actual claims produced
 by a real `compare-baseline` run against the actual ground truth, with
@@ -1630,7 +1630,7 @@ was close - not generated or guessed by an LLM.
 
 `accuracy_scoring.py` adds `generate_accuracy_review()`, which runs a real
 comparison and writes a review template (`evaluation/<dataset>_review.json`)
-with each question's ground-truth `note`, both baselines' actual claims,
+with each question's `ground_truth_answer`, both baselines' actual claims,
 and - critically - each claim's citations (`document_extraction_id`,
 `page_number`, `supporting_text`), added specifically so a reviewer can
 look up the real page a claim rests on rather than judge blind; a first

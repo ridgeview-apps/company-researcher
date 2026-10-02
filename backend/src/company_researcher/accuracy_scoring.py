@@ -45,11 +45,11 @@ class QuestionAccuracyReview:
     # which would conflate "wrong" with "declined to answer" - exactly one
     # of specialized_verdict/specialized_refusal_verdict applies, matching
     # whether specialized_claim is present. Verdict fields are None until a
-    # human fills them in against ground_truth_note; score_accuracy_review
+    # human fills them in against ground_truth_answer; score_accuracy_review
     # fails closed on any question left unreviewed.
     question_id: str
     question_text: str
-    ground_truth_note: str
+    ground_truth_answer: str
     baseline_claim: str
     baseline_citations: tuple[CitationRef, ...]
     baseline_verdict: AccuracyVerdict | None
@@ -66,15 +66,17 @@ def generate_accuracy_review(
     """Build a review template from a real baseline-comparison run - verdicts left blank.
 
     Every field comes directly from a real `run_comparison()` result and
-    the dataset's own hand-verified `note` - nothing here is invented.
+    the dataset's own hand-verified `ground_truth_answer` - nothing here is invented.
     """
-    note_by_question_id = {question.id: question.note for question in dataset.questions}
+    answers_by_question_id = {
+        question.id: question.ground_truth_answer for question in dataset.questions
+    }
     reviews = []
     for comparison in comparisons:
-        note = note_by_question_id.get(comparison.question_id)
-        if note is None:
+        answer = answers_by_question_id.get(comparison.question_id)
+        if answer is None:
             raise AccuracyScoringError(
-                f"No ground-truth note found for question_id="
+                f"No ground-truth answer found for question_id="
                 f"{comparison.question_id!r} in the evaluation dataset"
             )
         specialized_finding = comparison.specialized_finding
@@ -82,7 +84,7 @@ def generate_accuracy_review(
             QuestionAccuracyReview(
                 question_id=comparison.question_id,
                 question_text=comparison.question_text,
-                ground_truth_note=note,
+                ground_truth_answer=answer,
                 baseline_claim=comparison.baseline_finding.claim,
                 baseline_citations=tuple(
                     _citation_ref(citation)
@@ -130,7 +132,7 @@ def _review_to_dict(review: QuestionAccuracyReview) -> dict[str, object]:
     return {
         "question_id": review.question_id,
         "question_text": review.question_text,
-        "ground_truth_note": review.ground_truth_note,
+        "ground_truth_answer": review.ground_truth_answer,
         "baseline_claim": review.baseline_claim,
         "baseline_citations": [
             _citation_ref_to_dict(citation) for citation in review.baseline_citations
@@ -159,7 +161,7 @@ def load_accuracy_review(path: Path) -> list[QuestionAccuracyReview]:
         QuestionAccuracyReview(
             question_id=review["question_id"],
             question_text=review["question_text"],
-            ground_truth_note=review["ground_truth_note"],
+            ground_truth_answer=review["ground_truth_answer"],
             baseline_claim=review["baseline_claim"],
             baseline_citations=tuple(
                 _citation_ref_from_dict(citation)

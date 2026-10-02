@@ -61,15 +61,19 @@ def _comparison(
     )
 
 
-def _dataset(notes: dict[str, str]) -> EvaluationDataset:
+def _dataset(answers: dict[str, str]) -> EvaluationDataset:
     return EvaluationDataset(
         company_number="TE000011",
         company_name="Test Co",
         questions=tuple(
             EvaluationQuestion(
-                id=qid, text=qid, query=qid, relevant_pages=(), note=note
+                id=qid,
+                text=qid,
+                query=qid,
+                relevant_pages=(),
+                ground_truth_answer=answer,
             )
-            for qid, note in notes.items()
+            for qid, answer in answers.items()
         ),
     )
 
@@ -113,7 +117,7 @@ def test_generate_accuracy_review_builds_a_blank_template_from_real_comparisons(
     assert reviews[0] == QuestionAccuracyReview(
         question_id="q1",
         question_text="What was turnover?",
-        ground_truth_note="Turnover: £490,142k",
+        ground_truth_answer="Turnover: £490,142k",
         baseline_claim="Turnover was £490m",
         baseline_citations=(
             CitationRef(
@@ -138,7 +142,7 @@ def test_generate_accuracy_review_builds_a_blank_template_from_real_comparisons(
     assert reviews[1] == QuestionAccuracyReview(
         question_id="q2",
         question_text="Who is the secretary?",
-        ground_truth_note="Secretary: C Reed",
+        ground_truth_answer="Secretary: C Reed",
         baseline_claim="I don't know",
         baseline_citations=(),
         baseline_verdict=None,
@@ -152,7 +156,7 @@ def test_generate_accuracy_review_builds_a_blank_template_from_real_comparisons(
 
 def test_generate_accuracy_review_rejects_a_question_missing_from_the_dataset() -> None:
     comparisons = [_comparison("q1", "?", "claim", specialized_claim="claim")]
-    dataset = _dataset({"other-question": "note"})
+    dataset = _dataset({"other-question": "answer"})
 
     with pytest.raises(AccuracyScoringError, match="q1"):
         generate_accuracy_review(comparisons, dataset)
@@ -163,7 +167,7 @@ def test_save_and_load_accuracy_review_round_trips(tmp_path: Path) -> None:
         QuestionAccuracyReview(
             question_id="q1",
             question_text="?",
-            ground_truth_note="note",
+            ground_truth_answer="answer",
             baseline_claim="baseline claim",
             baseline_citations=(
                 CitationRef(
@@ -197,7 +201,7 @@ def _reviewed(
     return QuestionAccuracyReview(
         question_id=question_id,
         question_text="?",
-        ground_truth_note="note",
+        ground_truth_answer="answer",
         baseline_claim="c",
         baseline_citations=(),
         baseline_verdict=baseline_verdict,  # type: ignore[arg-type]

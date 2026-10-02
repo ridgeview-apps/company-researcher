@@ -37,7 +37,7 @@ class EvaluationQuestion:
     the short keyword string actually issued to lexical search: matching the
     full question sentence performs far worse than a short query against
     PostgreSQL's OR-combined term ranking, so the two are kept distinct.
-    `note` is the dataset's hand-verified ground-truth answer - unused by
+    `ground_truth_answer` is the dataset's hand-verified answer - unused by
     retrieval scoring itself, but read by `accuracy_scoring.py` to build a
     factual-accuracy review; it defaults to an empty string so existing ad
     hoc test fixtures that construct `EvaluationQuestion` directly don't
@@ -48,7 +48,7 @@ class EvaluationQuestion:
     text: str
     query: str
     relevant_pages: tuple[RelevantPage, ...]
-    note: str = ""
+    ground_truth_answer: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,7 @@ def load_evaluation_dataset(path: Path) -> EvaluationDataset:
                 )
                 for page in question["relevant_pages"]
             ),
-            note=question["note"],
+            ground_truth_answer=question["ground_truth_answer"],
         )
         for question in payload["questions"]
     )
